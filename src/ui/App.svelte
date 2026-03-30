@@ -6,28 +6,90 @@
   // 'welcome'  — no identity yet, show onboarding screen
   // 'creating' — waiting for Bare to generate keypair
   // 'identity' — keypair exists, show public key + QR
-  type View = 'loading' | 'welcome' | 'creating' | 'identity'
+  type View = 'loading' | 'welcome' | 'creating' | 'identity' | 'findUser'
 
   let view = $state<View>('loading')
   let publicKey = $state<string | null>(null)
+  let driveKey = $state<string | null>(null)
   let qrDataUrl = $state<string | null>(null)
   let error = $state<string | null>(null)
 
-  // Truncate public key for display: 0x1a2b...ef90
-  let shortKey = $derived(
-    publicKey
-      ? '0x' + publicKey.slice(0, 4) + '...' + publicKey.slice(-4)
+  // Copy full contact info (both keys as JSON) — used for sharing
+  let contactCopied = $state(false)
+
+  async function copyContactInfo () {
+    if (!publicKey || !driveKey) return
+    await navigator.clipboard.writeText(JSON.stringify({ publicKey, driveKey }))
+    contactCopied = true
+    setTimeout(() => { contactCopied = false }, 2000)
+  }
+
+  // Find user — separate view
+
+  let peerInput = $state('')
+  let peerProfile = $state<{ name: string, bio: string, hasAvatar: boolean } | null>(null)
+  let peerPublicKey = $state<string | null>(null)
+  let peerFoundDriveKey = $state<string | null>(null)
+  let findLoading = $state(false)
+  let findError = $state<string | null>(null)
+
+  let peerShortKey = $derived(
+    peerPublicKey
+      ? '0x' + peerPublicKey.slice(0, 4) + '...' + peerPublicKey.slice(-4)
       : null
   )
 
-  // Copy key to clipboard
-  let keyCopied = $state(false)
+  function findReset () {
+    view = 'identity'
+    peerInput = ''
+    peerProfile = null
+    peerPublicKey = null
+    peerFoundDriveKey = null
+    findError = null
+  }
 
-  async function copyPublicKey () {
-    if (!publicKey) return
-    await navigator.clipboard.writeText(publicKey)
-    keyCopied = true
-    setTimeout(() => { keyCopied = false }, 2000)
+  async function findPeer () {
+    findError = null
+    peerProfile = null
+    findLoading = true
+    try {
+      let parsedDriveKey: string
+      let parsedPublicKey: string | null = null
+
+      try {
+        const parsed = JSON.parse(peerInput.trim())
+        parsedDriveKey = parsed.driveKey
+        parsedPublicKey = parsed.publicKey ?? null
+      } catch {
+        findError = 'Invalid format. Paste the full contact key (JSON).'
+        return
+      }
+
+      if (!parsedDriveKey) {
+        findError = 'No drive key found in input.'
+        return
+      }
+
+      const resp = await fetch('/api/get-peer-profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ driveKey: parsedDriveKey })
+      })
+
+      if (!resp.ok) {
+        const err = await resp.json()
+        findError = err.error || 'Failed to load profile'
+        return
+      }
+
+      peerProfile = await resp.json()
+      peerPublicKey = parsedPublicKey
+      peerFoundDriveKey = parsedDriveKey
+    } catch (e) {
+      findError = e instanceof Error ? e.message : 'Unknown error'
+    } finally {
+      findLoading = false
+    }
   }
 
   // Accordion open/close state
@@ -126,33 +188,32 @@
 
   onMount(async () => {
     try {
-      const storage = Pear.config.storage
-
-      // Check identity status written by Bare before WebView opened
-      const resp = await fetch('file://' + storage + '/pubkey.json')
-      if (!resp.ok) throw new Error('Failed to read identity file')
+      const resp = await fetch('/api/get-identity')
+      if (!resp.ok) throw new Error('Failed to read identity')
       const data = await resp.json()
 
       if (data.status === 'pending') {
         view = 'welcome'
       } else {
-        await showIdentity(data.publicKey)
+        await showIdentity(data.publicKey, data.driveKey)
       }
     } catch (e) {
       error = e instanceof Error ? e.message : 'Unknown error'
     }
   })
 
-  // Renders the identity screen for a given public key hex string
-  async function showIdentity (pubKey: string) {
+  // Renders the identity screen for a given public key + drive key
+  async function showIdentity (pubKey: string, dKey: string) {
     publicKey = pubKey
-    qrDataUrl = await QRCode.toDataURL(pubKey, {
+    driveKey = dKey
+    // QR encodes both keys so anyone scanning can look up our Hyperdrive
+    const qrPayload = JSON.stringify({ publicKey: pubKey, driveKey: dKey })
+    qrDataUrl = await QRCode.toDataURL(qrPayload, {
       width: 200,
       margin: 1,
       color: { dark: '#f8fafc', light: '#2a2f3a' }
     })
     view = 'identity'
-    // Load profile in background — non-blocking
     loadProfile()
   }
 
@@ -162,8 +223,8 @@
     try {
       const resp = await fetch('/api/create-identity')
       if (!resp.ok) throw new Error('Bare API returned ' + resp.status)
-      const { publicKey: pubKey } = await resp.json()
-      await showIdentity(pubKey)
+      const { publicKey: pubKey, driveKey: dKey } = await resp.json()
+      await showIdentity(pubKey, dKey)
     } catch (e) {
       error = e instanceof Error ? e.message : 'Unknown error'
       view = 'welcome'
@@ -236,216 +297,256 @@
     <div class="identity-card">
       <div class="qr-block">
         {#if qrDataUrl}
-          <img src={qrDataUrl} alt="Public key QR code" class="qr" />
+          <img src={qrDataUrl} alt="QR code" class="qr" />
         {/if}
+        <button class="share-contact-btn" onclick={copyContactInfo}>
+          {#if contactCopied}
+            Copied!
+          {:else}
+            Copy contact key
+          {/if}
+        </button>
       </div>
-      <div class="key-block">
-        <div class="label">Your public key</div>
-        <div class="short-key">{shortKey}</div>
-        <div class="key-copy-row">
-          <div class="full-key">{publicKey}</div>
-          <button
-            class="copy-btn"
-            onclick={copyPublicKey}
-            title="Copy full key"
-            aria-label="Copy public key"
-          >
-            {#if keyCopied}
-              <!-- Checkmark -->
-              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"
-                stroke-linecap="round" stroke-linejoin="round">
-                <path d="M3 8l3.5 3.5L13 4.5"/>
-              </svg>
-            {:else}
-              <!-- Copy icon -->
-              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"
-                stroke-linecap="round" stroke-linejoin="round">
-                <rect x="5" y="5" width="8" height="9" rx="1.5"/>
-                <path d="M3 11V3a1 1 0 011-1h7"/>
-              </svg>
-            {/if}
-          </button>
-        </div>
-        {#if keyCopied}
-          <div class="copy-hint">Copied!</div>
-        {/if}
+      <div class="reputation-block">
+        <!-- Reputation score will appear here in Step 6 -->
       </div>
     </div>
 
-    <!-- Expandable sections -->
+    <div class="action-bar">
+      <button class="find-user-btn" onclick={() => { peerInput = ''; peerProfile = null; peerPublicKey = null; peerFoundDriveKey = null; findError = null; view = 'findUser' }}>
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"
+          stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="6.5" cy="6.5" r="4"/>
+          <path d="M11 11l3 3"/>
+        </svg>
+        Find user by contact key
+      </button>
+    </div>
+
     <div class="sections">
 
-      <!-- My Profile -->
-      <div class="section">
-        <button class="section-header" onclick={() => profileOpen = !profileOpen}>
-          <svg class="chevron" class:open={profileOpen} viewBox="0 0 16 16" fill="none">
-            <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5"
-              stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-          <span>My Profile</span>
-        </button>
-        {#if profileOpen}
-          <div class="section-body">
-            {#if !profileEditing}
-              <!-- VIEW MODE -->
-              <div class="avatar-row">
-                <div class="avatar-wrap">
-                  {#if avatarPreviewUrl}
-                    <img src={avatarPreviewUrl} alt="Avatar" class="avatar-img" />
+        <!-- My Profile -->
+        <div class="section">
+          <button class="section-header" onclick={() => profileOpen = !profileOpen}>
+            <svg class="chevron" class:open={profileOpen} viewBox="0 0 16 16" fill="none">
+              <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span>My Profile</span>
+          </button>
+          {#if profileOpen}
+            <div class="section-body">
+              {#if !profileEditing}
+                <!-- VIEW MODE -->
+                <div class="avatar-row">
+                  <div class="avatar-wrap">
+                    {#if avatarPreviewUrl}
+                      <img src={avatarPreviewUrl} alt="Avatar" class="avatar-img" />
+                    {:else}
+                      <div class="avatar-placeholder">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                          <circle cx="12" cy="8" r="4"/>
+                          <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
+                        </svg>
+                      </div>
+                    {/if}
+                  </div>
+                  <div class="profile-name-view">
+                    {#if profile.name}
+                      <span class="profile-name-text">{profile.name}</span>
+                    {:else}
+                      <span class="profile-empty-hint">No name set</span>
+                    {/if}
+                  </div>
+                </div>
+
+                <div class="profile-view-field">
+                  <div class="field-label">About</div>
+                  {#if profile.bio}
+                    <div class="profile-view-value">{profile.bio}</div>
                   {:else}
-                    <div class="avatar-placeholder">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                        <circle cx="12" cy="8" r="4"/>
-                        <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
-                      </svg>
-                    </div>
+                    <div class="profile-empty-hint">No info yet</div>
                   {/if}
                 </div>
-                <div class="profile-name-view">
-                  {#if profile.name}
-                    <span class="profile-name-text">{profile.name}</span>
-                  {:else}
-                    <span class="profile-empty-hint">No name set</span>
-                  {/if}
-                </div>
-              </div>
 
-              <div class="profile-view-field">
-                <div class="field-label">About</div>
-                {#if profile.bio}
-                  <div class="profile-view-value">{profile.bio}</div>
-                {:else}
-                  <div class="profile-empty-hint">No info yet</div>
-                {/if}
-              </div>
+                <button class="edit-btn" onclick={startEdit}>Edit profile</button>
 
-              <button class="edit-btn" onclick={startEdit}>Edit profile</button>
-
-            {:else}
-              <!-- EDIT MODE -->
-              <div class="avatar-row">
-                <div class="avatar-wrap">
-                  {#if avatarPreviewUrl}
-                    <img src={avatarPreviewUrl} alt="Avatar" class="avatar-img" />
-                  {:else}
-                    <div class="avatar-placeholder">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                        <circle cx="12" cy="8" r="4"/>
-                        <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
-                      </svg>
-                    </div>
-                  {/if}
-                </div>
-                <label class="avatar-btn">
-                  {avatarPreviewUrl ? 'Change photo' : 'Upload photo'}
-                  <input type="file" accept="image/*" onchange={uploadAvatar} hidden />
-                </label>
-              </div>
-
-              <div class="field">
-                <label class="field-label" for="profile-name">Name / Alias</label>
-                <input
-                  id="profile-name"
-                  type="text"
-                  class="field-input"
-                  placeholder="How others will see you"
-                  bind:value={profileDraft.name}
-                />
-              </div>
-
-              <div class="field">
-                <label class="field-label" for="profile-bio">About</label>
-                <textarea
-                  id="profile-bio"
-                  class="field-input field-textarea"
-                  placeholder="Describe what you do and what kind of deals you make"
-                  rows="3"
-                  bind:value={profileDraft.bio}
-                ></textarea>
-              </div>
-
-              <div class="edit-actions">
-                <button class="cancel-btn" onclick={cancelEdit}>Cancel</button>
-                <button class="save-btn" onclick={saveProfileEdit} disabled={profileSaving}>
-                  {profileSaving ? 'Saving...' : 'Save'}
-                </button>
-              </div>
-            {/if}
-          </div>
-        {/if}
-      </div>
-
-      <!-- Deals -->
-      <div class="section">
-        <button class="section-header" onclick={() => dealsOpen = !dealsOpen}>
-          <svg class="chevron" class:open={dealsOpen} viewBox="0 0 16 16" fill="none">
-            <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5"
-              stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-          <span>Deals</span>
-        </button>
-        {#if dealsOpen}
-          <div class="section-body muted">
-            Deal history coming soon.
-          </div>
-        {/if}
-      </div>
-
-      <!-- Settings -->
-      <div class="section">
-        <button class="section-header" onclick={() => settingsOpen = !settingsOpen}>
-          <svg class="chevron" class:open={settingsOpen} viewBox="0 0 16 16" fill="none">
-            <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5"
-              stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-          <span>Settings</span>
-        </button>
-        {#if settingsOpen}
-          <div class="section-body">
-            <!-- Display currency -->
-            <div class="setting-row">
-              <div class="setting-info">
-                <div class="setting-name">Display currency</div>
-                <div class="setting-desc">How deal amounts are shown across the app.</div>
-              </div>
-              <div class="currency-wrap">
-                <select
-                  class="field-input field-select currency-select"
-                  class:currency-saved={currencySaved}
-                  bind:value={profile.currency}
-                  onchange={saveCurrency}
-                >
-                  <option value="USD">USD</option>
-                  <option value="RUB">RUB</option>
-                  <option value="BTC">BTC</option>
-                </select>
-              </div>
-            </div>
-
-            <div class="setting-divider"></div>
-
-            <div class="setting-row">
-              <div class="setting-info">
-                <div class="setting-name">Delete My Identity</div>
-                <div class="setting-desc">Permanently removes your keypair and all your data from this device.</div>
-              </div>
-              {#if !confirmDelete}
-                <button class="danger-btn" onclick={() => confirmDelete = true}>
-                  Delete
-                </button>
               {:else}
-                <div class="confirm-row">
-                  <span class="confirm-label">This cannot be undone.</span>
-                  <button class="cancel-btn" onclick={() => confirmDelete = false}>Cancel</button>
-                  <button class="confirm-btn" onclick={deleteIdentity}>Delete</button>
+                <!-- EDIT MODE -->
+                <div class="avatar-row">
+                  <div class="avatar-wrap">
+                    {#if avatarPreviewUrl}
+                      <img src={avatarPreviewUrl} alt="Avatar" class="avatar-img" />
+                    {:else}
+                      <div class="avatar-placeholder">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                          <circle cx="12" cy="8" r="4"/>
+                          <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
+                        </svg>
+                      </div>
+                    {/if}
+                  </div>
+                  <label class="avatar-btn">
+                    {avatarPreviewUrl ? 'Change photo' : 'Upload photo'}
+                    <input type="file" accept="image/*" onchange={uploadAvatar} hidden />
+                  </label>
+                </div>
+
+                <div class="field">
+                  <label class="field-label" for="profile-name">Name / Alias</label>
+                  <input
+                    id="profile-name"
+                    type="text"
+                    class="field-input"
+                    placeholder="How others will see you"
+                    bind:value={profileDraft.name}
+                  />
+                </div>
+
+                <div class="field">
+                  <label class="field-label" for="profile-bio">About</label>
+                  <textarea
+                    id="profile-bio"
+                    class="field-input field-textarea"
+                    placeholder="Describe what you do and what kind of deals you make"
+                    rows="3"
+                    bind:value={profileDraft.bio}
+                  ></textarea>
+                </div>
+
+                <div class="edit-actions">
+                  <button class="cancel-btn" onclick={cancelEdit}>Cancel</button>
+                  <button class="save-btn" onclick={saveProfileEdit} disabled={profileSaving}>
+                    {profileSaving ? 'Saving...' : 'Save'}
+                  </button>
                 </div>
               {/if}
             </div>
-          </div>
-        {/if}
+          {/if}
+        </div>
+
+        <!-- Deals -->
+        <div class="section">
+          <button class="section-header" onclick={() => dealsOpen = !dealsOpen}>
+            <svg class="chevron" class:open={dealsOpen} viewBox="0 0 16 16" fill="none">
+              <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span>Deals</span>
+          </button>
+          {#if dealsOpen}
+            <div class="section-body muted">
+              Deal history coming soon.
+            </div>
+          {/if}
+        </div>
+
+        <!-- Settings -->
+        <div class="section">
+          <button class="section-header" onclick={() => settingsOpen = !settingsOpen}>
+            <svg class="chevron" class:open={settingsOpen} viewBox="0 0 16 16" fill="none">
+              <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span>Settings</span>
+          </button>
+          {#if settingsOpen}
+            <div class="section-body">
+              <!-- Display currency -->
+              <div class="setting-row">
+                <div class="setting-info">
+                  <div class="setting-name">Display currency</div>
+                  <div class="setting-desc">How deal amounts are shown across the app.</div>
+                </div>
+                <div class="currency-wrap">
+                  <select
+                    class="field-input field-select currency-select"
+                    class:currency-saved={currencySaved}
+                    bind:value={profile.currency}
+                    onchange={saveCurrency}
+                  >
+                    <option value="USD">USD</option>
+                    <option value="RUB">RUB</option>
+                    <option value="BTC">BTC</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="setting-divider"></div>
+
+              <div class="setting-row">
+                <div class="setting-info">
+                  <div class="setting-name">Delete My Identity</div>
+                  <div class="setting-desc">Permanently removes your keypair and all your data from this device.</div>
+                </div>
+                {#if !confirmDelete}
+                  <button class="danger-btn" onclick={() => confirmDelete = true}>
+                    Delete
+                  </button>
+                {:else}
+                  <div class="confirm-row">
+                    <span class="confirm-label">This cannot be undone.</span>
+                    <button class="cancel-btn" onclick={() => confirmDelete = false}>Cancel</button>
+                    <button class="confirm-btn" onclick={deleteIdentity}>Delete</button>
+                  </div>
+                {/if}
+              </div>
+            </div>
+          {/if}
+        </div>
+
       </div>
 
+  {:else if view === 'findUser'}
+    <div class="find-screen">
+      <button class="back-btn" onclick={findReset}>← Back</button>
+      <h2>Find User by Contact Key</h2>
+      <p class="find-hint">Paste the contact key JSON you received from another user.</p>
+
+      <textarea
+        class="field-input field-textarea"
+        placeholder="Paste contact key here"
+        rows="3"
+        bind:value={peerInput}
+      ></textarea>
+
+      {#if findError}
+        <div class="find-error">{findError}</div>
+      {/if}
+
+      <button class="find-submit-btn" onclick={findPeer} disabled={findLoading || !peerInput.trim()}>
+        {findLoading ? 'Searching...' : 'Search'}
+      </button>
+
+      {#if peerProfile}
+        <div class="peer-card">
+          <div class="peer-avatar-row">
+            <div class="avatar-wrap">
+              {#if peerProfile.hasAvatar && peerFoundDriveKey}
+                <img src={`/api/get-peer-avatar?key=${peerFoundDriveKey}`} alt="Avatar" class="avatar-img" />
+              {:else}
+                <div class="avatar-placeholder">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <circle cx="12" cy="8" r="4"/>
+                    <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
+                  </svg>
+                </div>
+              {/if}
+            </div>
+            <div>
+              <div class="peer-name">{peerProfile.name || 'Anonymous'}</div>
+              {#if peerShortKey}
+                <div class="peer-key-short">{peerShortKey}</div>
+              {/if}
+            </div>
+          </div>
+          {#if peerProfile.bio}
+            <div class="peer-bio">{peerProfile.bio}</div>
+          {/if}
+        </div>
+      {/if}
     </div>
+
   {/if}
 </main>
 
@@ -464,10 +565,13 @@
   }
 
   main {
+    display: block;
+    width: 100%;
     max-width: 600px;
     margin: 0 auto;
     padding: 0 1.5rem 2rem;
     padding-top: calc(38px + 2.5rem);
+    box-sizing: border-box;
   }
 
   h1 {
@@ -559,39 +663,22 @@
     align-items: flex-start;
   }
 
-  .qr-block { flex-shrink: 0; }
+  .qr-block {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+  }
 
   .qr {
     border-radius: 8px;
     display: block;
   }
 
-  .key-block {
+  .reputation-block {
     flex: 1;
     min-width: 0;
-  }
-
-  .label {
-    font-size: 0.75rem;
-    color: #64748b;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    margin-bottom: 0.5rem;
-  }
-
-  .short-key {
-    font-family: monospace;
-    font-size: 1.25rem;
-    color: #34d399;
-    margin-bottom: 0.75rem;
-  }
-
-  .full-key {
-    font-family: monospace;
-    font-size: 0.65rem;
-    color: #64748b;
-    word-break: break-all;
-    line-height: 1.5;
+    /* placeholder — reputation score goes here in Step 6 */
   }
 
   /* Expandable sections */
@@ -862,7 +949,7 @@
   }
 
   .field-input:focus {
-    border-color: #34d399;
+    border-color: #94a3b8;
   }
 
   .field-input::placeholder {
@@ -991,42 +1078,157 @@
     animation: saved-flash 2s ease-out forwards;
   }
 
-  /* Key copy row */
-  .key-copy-row {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.4rem;
-  }
-
-  .copy-btn {
-    flex-shrink: 0;
-    background: transparent;
-    border: none;
-    padding: 2px;
-    cursor: pointer;
-    color: #64748b;
-    line-height: 0;
-    border-radius: 4px;
-    transition: color 0.15s;
-    margin-top: 1px;
-  }
-
-  .copy-btn:hover { color: #34d399; }
-
-  .copy-btn svg {
-    width: 13px;
-    height: 13px;
-  }
-
-  .copy-hint {
-    font-size: 0.7rem;
-    color: #34d399;
-    margin-top: 0.3rem;
-  }
-
   .setting-divider {
     border: none;
     border-top: 1px solid #2d3340;
     margin: 0.85rem 0;
+  }
+
+  /* Share contact button — sits below QR, stretches to QR width */
+  .share-contact-btn {
+    margin-top: 0.5rem;
+    background: transparent;
+    border: 1px solid #374151;
+    color: #64748b;
+    border-radius: 6px;
+    padding: 0.4rem 0;
+    font-size: 0.78rem;
+    font-family: inherit;
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+  }
+
+  .share-contact-btn:hover {
+    border-color: #64748b;
+    color: #94a3b8;
+  }
+
+  /* Action bar between identity card and sections */
+  .action-bar {
+    margin: 0.75rem 0 0;
+    display: flex;
+    gap: 0.5rem;
+  }
+
+  .find-user-btn,
+  .find-submit-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    width: 100%;
+    background: transparent;
+    border: 1px solid #374151;
+    color: #94a3b8;
+    border-radius: 8px;
+    padding: 0.55rem 1rem;
+    font-size: 0.88rem;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+  }
+
+  .find-user-btn svg {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+  }
+
+  .find-user-btn:hover,
+  .find-submit-btn:hover {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: #64748b;
+    color: #e2e8f0;
+  }
+
+  .find-submit-btn {
+    margin-top: 0.75rem;
+  }
+
+  .find-submit-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  /* Find user screen */
+  .find-screen {
+    display: flex;
+    flex-direction: column;
+    text-align: left;
+    background: #2a2f3a;
+    border: 1px solid #374151;
+    border-radius: 12px;
+    padding: 1.5rem;
+  }
+
+  .back-btn {
+    background: transparent;
+    border: none;
+    color: #64748b;
+    text-align: left;
+    font-size: 0.85rem;
+    font-family: inherit;
+    cursor: pointer;
+    padding: 0;
+    margin-bottom: 1.5rem;
+    transition: color 0.15s;
+  }
+
+  .back-btn:hover {
+    color: #94a3b8;
+  }
+
+  .find-hint {
+    color: #64748b;
+    font-size: 0.88rem;
+    margin: -0.5rem 0 1.5rem;
+  }
+
+  .find-error {
+    color: #f87171;
+    font-size: 0.85rem;
+    margin-bottom: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    background: #7f1d1d22;
+    border: 1px solid #7f1d1d;
+    border-radius: 6px;
+  }
+
+  /* Peer profile result card */
+  .peer-card {
+    margin-top: 1.5rem;
+    background: #2a2f3a;
+    border: 1px solid #374151;
+    border-radius: 10px;
+    padding: 1.25rem;
+  }
+
+  .peer-avatar-row {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .peer-name {
+    font-size: 1rem;
+    font-weight: 600;
+    color: #f8fafc;
+    margin-bottom: 0.2rem;
+  }
+
+  .peer-key-short {
+    font-family: monospace;
+    font-size: 0.75rem;
+    color: #64748b;
+  }
+
+  .peer-bio {
+    font-size: 0.88rem;
+    color: #94a3b8;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    border-top: 1px solid #374151;
+    padding-top: 0.75rem;
   }
 </style>

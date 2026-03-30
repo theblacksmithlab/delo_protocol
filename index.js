@@ -2,6 +2,7 @@
 // Bare entry point — runs in Pear's JS runtime (not in the browser/WebView)
 import Runtime from 'pear-electron'
 import Bridge from 'pear-bridge'
+import Hyperswarm from 'hyperswarm'
 import crypto from 'hypercore-crypto'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, rmSync } from 'bare-fs'
 import { join } from 'bare-path'
@@ -10,9 +11,8 @@ import Corestore from 'corestore'
 import Hyperdrive from 'hyperdrive'
 
 const storage = Pear.config.storage
-const keypairPath  = join(storage, 'keypair.json')
-const pubkeyPath   = join(storage, 'pubkey.json')
-const drivePath    = join(storage, 'drive.json')
+const keypairPath   = join(storage, 'keypair.json')
+const drivePath     = join(storage, 'drive.json')
 const corestorePath = join(storage, 'corestore')
 
 mkdirSync(storage, { recursive: true })
@@ -20,6 +20,7 @@ mkdirSync(storage, { recursive: true })
 // Global references — set during startup or identity creation
 let store = null
 let drive = null
+let swarm = null  // persistent swarm that announces our own drive to DHT
 
 // ---------------------------------------------------------------------------
 // Keypair helpers
@@ -47,15 +48,12 @@ function generateAndSaveKeypair () {
 // Corestore + Hyperdrive helpers
 // ---------------------------------------------------------------------------
 
-// Opens (or creates) the shared Corestore — manages all Hypercore instances on disk.
-// Idempotent: safe to call multiple times.
 async function initStore () {
   if (store) return
   store = new Corestore(corestorePath)
   await store.ready()
 }
 
-// Opens an existing Hyperdrive using the key saved in drive.json.
 async function openDrive () {
   await initStore()
   const saved = JSON.parse(readFileSync(drivePath, 'utf8'))
@@ -63,18 +61,15 @@ async function openDrive () {
   await drive.ready()
 }
 
-// Creates a brand-new Hyperdrive, saves its key, writes an empty profile.
 async function createDrive () {
   await initStore()
   drive = new Hyperdrive(store)
   await drive.ready()
 
-  // Persist the drive key so we can reopen the same drive on next launch
   writeFileSync(drivePath, JSON.stringify({
     key: b4a.toString(drive.key, 'hex')
   }))
 
-  // Seed an empty profile so get-profile never returns null
   const emptyProfile = {
     name: '',
     bio: '',
@@ -83,6 +78,17 @@ async function createDrive () {
     avatarMime: ''
   }
   await drive.put('/profile.json', b4a.from(JSON.stringify(emptyProfile)))
+}
+
+// Announces our own Hyperdrive to Hyperswarm DHT so peers can replicate it.
+// server: true  — we appear in DHT (others can find us)
+// client: false — we don't look for others on this topic (that's done per-request)
+// Kept alive for the app lifetime.
+async function announceToSwarm () {
+  if (!drive || swarm) return
+  swarm = new Hyperswarm()
+  swarm.on('connection', socket => store.replicate(socket))
+  swarm.join(drive.discoveryKey, { server: true, client: false })
 }
 
 // ---------------------------------------------------------------------------
@@ -98,22 +104,13 @@ function readBody (req) {
 }
 
 // ---------------------------------------------------------------------------
-// Startup — inform WebView about identity state, open drive if it exists
+// Startup — open drive + announce if identity exists
 // ---------------------------------------------------------------------------
 const existing = loadKeypair()
 
-if (existing) {
-  // Returning user — expose public key for display
-  writeFileSync(pubkeyPath, JSON.stringify({
-    publicKey: b4a.toString(existing.publicKey, 'hex')
-  }))
-  // Reopen drive if it was created before
-  if (existsSync(drivePath)) {
-    await openDrive()
-  }
-} else {
-  // First launch — show onboarding in WebView
-  writeFileSync(pubkeyPath, JSON.stringify({ status: 'pending' }))
+if (existing && existsSync(drivePath)) {
+  await openDrive()
+  await announceToSwarm()
 }
 
 // ---------------------------------------------------------------------------
@@ -122,16 +119,12 @@ if (existing) {
 const bridge = new Bridge({ mount: 'dist' })
 await bridge.ready()
 
-// Inject API routes into pear-bridge's HTTP server (same origin = no CORS block).
-// bare-events returns listeners as [fn, once] tuples — double-destructure to get the fn.
 const [[bridgeHandler]] = bridge.server.listeners('request')
 bridge.server.removeAllListeners('request')
 
 bridge.server.on('request', async (req, res) => {
-  // Strip pear-bridge's internal URL suffix (e.g. /path+app+app → /path)
   const url = (req.url ?? '').split('+')[0]
 
-  // Helper to send JSON
   const json = (data, status = 200) => {
     res.statusCode = status
     res.setHeader('Content-Type', 'application/json')
@@ -139,36 +132,50 @@ bridge.server.on('request', async (req, res) => {
   }
 
   try {
+    // --- Identity: status ------------------------------------------------------
+    // Returns { status: 'pending' } if no keypair, or { publicKey, driveKey } if exists.
+    // WebView calls this on startup instead of reading pubkey.json via file://.
+    if (url === '/api/get-identity') {
+      if (!existsSync(keypairPath)) return json({ status: 'pending' })
+      const saved = JSON.parse(readFileSync(keypairPath, 'utf8'))
+      const driveSaved = existsSync(drivePath)
+        ? JSON.parse(readFileSync(drivePath, 'utf8'))
+        : null
+      return json({
+        publicKey: saved.publicKey,
+        driveKey: driveSaved ? driveSaved.key : null
+      })
+    }
+
     // --- Identity: create -----------------------------------------------
     if (url === '/api/create-identity') {
-      // Idempotent: if keypair already exists (double-click), return existing key
       if (existsSync(keypairPath)) {
+        // Idempotent: keypair already exists — return existing keys
         const saved = JSON.parse(readFileSync(keypairPath, 'utf8'))
-        // Reopen drive if needed
         if (!drive && existsSync(drivePath)) await openDrive()
-        return json({ publicKey: saved.publicKey })
+        if (!swarm) await announceToSwarm()
+        const driveSaved = JSON.parse(readFileSync(drivePath, 'utf8'))
+        return json({ publicKey: saved.publicKey, driveKey: driveSaved.key })
       }
 
       const keypair = generateAndSaveKeypair()
       const publicKey = b4a.toString(keypair.publicKey, 'hex')
-      writeFileSync(pubkeyPath, JSON.stringify({ publicKey }))
 
-      // Initialize Hyperdrive for this new identity
       await createDrive()
+      await announceToSwarm()
 
-      return json({ publicKey })
+      const driveSaved = JSON.parse(readFileSync(drivePath, 'utf8'))
+      return json({ publicKey, driveKey: driveSaved.key })
     }
 
     // --- Identity: delete -----------------------------------------------
     if (url === '/api/delete-identity') {
-      // Close drive gracefully before wiping files
+      if (swarm) { await swarm.destroy(); swarm = null }
       if (drive) { await drive.close(); drive = null }
       if (store) { await store.close(); store = null }
 
-      if (existsSync(keypairPath))  unlinkSync(keypairPath)
-      if (existsSync(pubkeyPath))   unlinkSync(pubkeyPath)
-      if (existsSync(drivePath))    unlinkSync(drivePath)
-      // Remove corestore directory (all Hypercore data for this identity)
+      if (existsSync(keypairPath))   unlinkSync(keypairPath)
+      if (existsSync(drivePath))     unlinkSync(drivePath)
       if (existsSync(corestorePath)) rmSync(corestorePath, { recursive: true })
 
       return json({ ok: true })
@@ -188,7 +195,6 @@ bridge.server.on('request', async (req, res) => {
       const body = await readBody(req)
       const incoming = JSON.parse(b4a.toString(body))
 
-      // Read existing profile to preserve avatarMime
       const existing_buf = await drive.get('/profile.json')
       const existing_profile = existing_buf
         ? JSON.parse(b4a.toString(existing_buf))
@@ -215,7 +221,6 @@ bridge.server.on('request', async (req, res) => {
 
       await drive.put('/avatar', body)
 
-      // Update profile to record avatar presence and mime type
       const buf = await drive.get('/profile.json')
       const profile = buf ? JSON.parse(b4a.toString(buf)) : {}
       profile.hasAvatar = true
@@ -232,7 +237,6 @@ bridge.server.on('request', async (req, res) => {
       const buf = await drive.get('/avatar')
       if (!buf) { res.statusCode = 404; return res.end() }
 
-      // Get mime type from profile
       const profileBuf = await drive.get('/profile.json')
       const mime = profileBuf
         ? (JSON.parse(b4a.toString(profileBuf)).avatarMime || 'image/jpeg')
@@ -244,7 +248,84 @@ bridge.server.on('request', async (req, res) => {
       return res.end(buf)
     }
 
-    // Everything else: pass through to pear-bridge's original handler
+    // --- Peer avatar: serve --------------------------------------------
+    // GET /api/get-peer-avatar?key=<driveKey>
+    // Returns avatar binary for any peer (own or remote).
+    if (url.startsWith('/api/get-peer-avatar')) {
+      const peerDriveKey = url.split('?key=')[1]
+      if (!peerDriveKey) { res.statusCode = 400; return res.end() }
+
+      // Own avatar — read from our open drive directly
+      if (drive && b4a.toString(drive.key, 'hex') === peerDriveKey) {
+        const buf = await drive.get('/avatar')
+        if (!buf) { res.statusCode = 404; return res.end() }
+        const profileBuf = await drive.get('/profile.json')
+        const mime = profileBuf
+          ? (JSON.parse(b4a.toString(profileBuf)).avatarMime || 'image/jpeg')
+          : 'image/jpeg'
+        res.statusCode = 200
+        res.setHeader('Content-Type', mime)
+        res.setHeader('Content-Length', buf.length)
+        return res.end(buf)
+      }
+
+      // Remote peer — use cached data from store (already replicated during profile fetch)
+      const peerDrive = new Hyperdrive(store, b4a.from(peerDriveKey, 'hex'))
+      await peerDrive.ready()
+      const buf = await peerDrive.get('/avatar')
+      if (!buf) { res.statusCode = 404; return res.end() }
+      const profileBuf = await peerDrive.get('/profile.json')
+      const mime = profileBuf
+        ? (JSON.parse(b4a.toString(profileBuf)).avatarMime || 'image/jpeg')
+        : 'image/jpeg'
+      res.statusCode = 200
+      res.setHeader('Content-Type', mime)
+      res.setHeader('Content-Length', buf.length)
+      return res.end(buf)
+    }
+
+    // --- Peer profile: fetch -------------------------------------------
+    // Connects to a peer's Hyperdrive by driveKey and returns their profile.json.
+    // Creates a short-lived Hyperswarm connection, destroys it when done.
+    if (url === '/api/get-peer-profile') {
+      const body = await readBody(req)
+      const { driveKey: peerDriveKey } = JSON.parse(b4a.toString(body))
+
+      // Fast path: own profile — data is already in our open drive
+      if (drive && b4a.toString(drive.key, 'hex') === peerDriveKey) {
+        const buf = await drive.get('/profile.json')
+        if (!buf) return json({ error: 'Profile not found' }, 404)
+        return json(JSON.parse(b4a.toString(buf)))
+      }
+
+      const peerDrive = new Hyperdrive(store, b4a.from(peerDriveKey, 'hex'))
+      await peerDrive.ready()
+
+      // Slow path: connect to peer via Hyperswarm and replicate
+      const peerSwarm = new Hyperswarm()
+      peerSwarm.on('connection', socket => store.replicate(socket))
+      peerSwarm.join(peerDrive.discoveryKey, { server: false, client: true })
+
+      try {
+        await Promise.race([
+          (async () => {
+            await new Promise(resolve => peerSwarm.once('connection', resolve))
+            await peerDrive.update()
+          })(),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Peer not reachable (timeout)')), 15000)
+          )
+        ])
+
+        const profileBuf = await peerDrive.get('/profile.json')
+        if (!profileBuf) return json({ error: 'Profile not found' }, 404)
+
+        return json(JSON.parse(b4a.toString(profileBuf)))
+      } finally {
+        await peerSwarm.destroy()
+      }
+    }
+
     bridgeHandler(req, res)
 
   } catch (err) {
@@ -255,4 +336,7 @@ bridge.server.on('request', async (req, res) => {
 const runtime = new Runtime()
 const pipe = await runtime.start({ bridge })
 
-Pear.teardown(() => pipe.end())
+Pear.teardown(async () => {
+  if (swarm) await swarm.destroy()
+  pipe.end()
+})
