@@ -1,0 +1,12 @@
+[package]
+name = "trust-core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# cdylib = C dynamic library, required for WASM output
+crate-type = ["cdylib"]
+
+[dependencies]
+# wasm-bindgen bridges Rust types ↔ JS types at the WASM boundary
+wasm-bindgen = "0.2"

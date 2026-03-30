@@ -1,0 +1,26 @@
+# Rust build output
+/target
+
+# Vite build output
+/dist
+
+# JS dependencies
+/node_modules
+
+# WASM build output
+/wasm-pkg
+
+# macOS system files
+.DS_Store
+**/.DS_Store
+
+# JetBrains IDE files
+.idea/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# OS
+Thumbs.db
