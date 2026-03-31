@@ -256,12 +256,10 @@
     <button class="tl-btn tl-minimize" onclick={() => Pear.Window.self.minimize()}     title="Minimize"></button>
     <button class="tl-btn tl-zoom"     onclick={() => Pear.Window.self.fullscreen()}   title="Fullscreen"></button>
   </div>
+  <div class="titlebar-title">Trust Protocol • Decentralized reputation, owned by you.</div>
 </div>
 
 <main>
-  <h1>Trust Protocol</h1>
-  <p class="subtitle">Decentralized reputation, owned by you.</p>
-
   {#if error}
     <div class="card error">Error: {error}</div>
 
@@ -558,7 +556,11 @@
 
   :global(body) {
     margin: 0;
-    background: #1e2128;
+    background-color: #1e2128;
+    background-image: url('/background.png');
+    background-size: cover;
+    background-position: center top;
+    background-attachment: fixed;
     color: #e2e8f0;
     font-family: 'gothampro', system-ui, sans-serif;
     text-align: center;
@@ -572,18 +574,6 @@
     padding: 0 1.5rem 2rem;
     padding-top: calc(38px + 2.5rem);
     box-sizing: border-box;
-  }
-
-  h1 {
-    font-size: 2rem;
-    font-weight: 700;
-    margin: 0 0 0.25rem;
-    color: #f8fafc;
-  }
-
-  .subtitle {
-    color: #94a3b8;
-    margin: 0 0 2rem;
   }
 
   /* Shared card base */
@@ -654,13 +644,19 @@
 
   /* Identity card */
   .identity-card {
-    background: #2a2f3a;
-    border: 1px solid #374151;
-    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.07);
+    backdrop-filter: blur(28px) saturate(180%);
+    -webkit-backdrop-filter: blur(28px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    border-radius: 20px;
     padding: 1.5rem;
     display: flex;
     gap: 1.5rem;
     align-items: flex-start;
+    box-shadow:
+      0 8px 32px rgba(0, 0, 0, 0.4),
+      inset 0 1px 0 rgba(255, 255, 255, 0.2),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.15);
   }
 
   .qr-block {
@@ -690,10 +686,16 @@
   }
 
   .section {
-    background: #2a2f3a;
-    border: 1px solid #374151;
-    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.07);
+    backdrop-filter: blur(28px) saturate(180%);
+    -webkit-backdrop-filter: blur(28px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    border-radius: 16px;
     overflow: hidden;
+    box-shadow:
+      0 4px 20px rgba(0, 0, 0, 0.3),
+      inset 0 1px 0 rgba(255, 255, 255, 0.18),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.12);
   }
 
   .section-header {
@@ -733,7 +735,7 @@
   .section-body {
     padding: 0 1rem 1rem;
     font-size: 0.9rem;
-    border-top: 1px solid #374151;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
     padding-top: 0.85rem;
     text-align: left;
   }
@@ -841,6 +843,20 @@
     -webkit-app-region: drag;
     -webkit-user-select: none;
     z-index: 100;
+  }
+
+  .titlebar-title {
+    position: absolute;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-size: 0.72rem;
+    color: #64748b;
+    pointer-events: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding: 0 100px;
   }
 
   .traffic-lights {
@@ -1110,22 +1126,27 @@
     gap: 0.5rem;
   }
 
-  .find-user-btn,
-  .find-submit-btn {
+  /* Action button on main screen — icy blue tint */
+  .find-user-btn {
     display: flex;
     align-items: center;
     justify-content: center;
     gap: 0.5rem;
     width: 100%;
-    background: transparent;
-    border: 1px solid #374151;
-    color: #94a3b8;
-    border-radius: 8px;
+    background: rgba(147, 210, 255, 0.08);
+    backdrop-filter: blur(28px) saturate(200%);
+    -webkit-backdrop-filter: blur(28px) saturate(200%);
+    border: 1px solid rgba(147, 210, 255, 0.22);
+    color: #93d2ff;
+    border-radius: 14px;
     padding: 0.55rem 1rem;
     font-size: 0.88rem;
     font-family: inherit;
     cursor: pointer;
-    transition: background 0.15s, border-color 0.15s, color 0.15s;
+    box-shadow:
+      0 4px 20px rgba(100, 180, 255, 0.1),
+      inset 0 1px 0 rgba(200, 235, 255, 0.25);
+    transition: background 0.15s, border-color 0.15s, color 0.15s, box-shadow 0.15s;
   }
 
   .find-user-btn svg {
@@ -1134,11 +1155,45 @@
     flex-shrink: 0;
   }
 
-  .find-user-btn:hover,
+  .find-user-btn:hover {
+    background: rgba(147, 210, 255, 0.14);
+    border-color: rgba(147, 210, 255, 0.38);
+    color: #c2e4ff;
+    box-shadow:
+      0 6px 24px rgba(100, 180, 255, 0.18),
+      inset 0 1px 0 rgba(200, 235, 255, 0.35);
+  }
+
+  /* Search button inside find screen */
+  .find-submit-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    width: 100%;
+    background: rgba(255, 255, 255, 0.07);
+    backdrop-filter: blur(28px) saturate(180%);
+    -webkit-backdrop-filter: blur(28px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    color: #94a3b8;
+    border-radius: 14px;
+    padding: 0.55rem 1rem;
+    font-size: 0.88rem;
+    font-family: inherit;
+    cursor: pointer;
+    box-shadow:
+      0 4px 16px rgba(0, 0, 0, 0.25),
+      inset 0 1px 0 rgba(255, 255, 255, 0.18);
+    transition: background 0.15s, border-color 0.15s, color 0.15s, box-shadow 0.15s;
+  }
+
   .find-submit-btn:hover {
-    background: rgba(255, 255, 255, 0.04);
-    border-color: #64748b;
+    background: rgba(255, 255, 255, 0.12);
+    border-color: rgba(255, 255, 255, 0.22);
     color: #e2e8f0;
+    box-shadow:
+      0 6px 20px rgba(0, 0, 0, 0.3),
+      inset 0 1px 0 rgba(255, 255, 255, 0.25);
   }
 
   .find-submit-btn {
@@ -1155,10 +1210,16 @@
     display: flex;
     flex-direction: column;
     text-align: left;
-    background: #2a2f3a;
-    border: 1px solid #374151;
-    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.07);
+    backdrop-filter: blur(28px) saturate(180%);
+    -webkit-backdrop-filter: blur(28px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    border-radius: 20px;
     padding: 1.5rem;
+    box-shadow:
+      0 8px 32px rgba(0, 0, 0, 0.4),
+      inset 0 1px 0 rgba(255, 255, 255, 0.2),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.15);
   }
 
   .back-btn {
