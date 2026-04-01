@@ -6,7 +6,7 @@
   // 'welcome'  — no identity yet, show onboarding screen
   // 'creating' — waiting for Bare to generate keypair
   // 'identity' — keypair exists, show public key + QR
-  type View = 'loading' | 'welcome' | 'creating' | 'identity' | 'findUser'
+  type View = 'loading' | 'welcome' | 'creating' | 'identity' | 'findUser' | 'peerProfile'
 
   let view = $state<View>('loading')
   let publicKey = $state<string | null>(null)
@@ -14,8 +14,28 @@
   let qrDataUrl = $state<string | null>(null)
   let error = $state<string | null>(null)
 
-  // Copy full contact info (both keys as JSON) — used for sharing
+  // Share modal (QR + copy contact key)
+  let shareOpen = $state(false)
   let contactCopied = $state(false)
+
+  // Short version of own public key for display
+  let shortKey = $derived(
+    publicKey ? '0x' + publicKey.slice(0, 4) + '...' + publicKey.slice(-4) : null
+  )
+
+  // Currency symbol for trust volume display
+  let currencySymbol = $derived(
+    ({ USD: '$', RUB: '₽', BTC: '₿' } as Record<string, string>)[profile.currency] ?? '$'
+  )
+
+  // Time in network since identity creation
+  function memberSinceDisplay (iso: string | null): string {
+    if (!iso) return '—'
+    const years = (Date.now() - new Date(iso).getTime()) / (1000 * 60 * 60 * 24 * 365.25)
+    if (years < 1 / 12) return '<1mo'
+    if (years < 1) return Math.round(years * 12) + 'mo'
+    return years.toFixed(1) + 'y'
+  }
 
   async function copyContactInfo () {
     if (!publicKey || !driveKey) return
@@ -27,7 +47,7 @@
   // Find user — separate view
 
   let peerInput = $state('')
-  let peerProfile = $state<{ name: string, bio: string, hasAvatar: boolean } | null>(null)
+  let peerProfile = $state<{ name: string, bio: string, hasAvatar: boolean, memberSince: string | null } | null>(null)
   let peerPublicKey = $state<string | null>(null)
   let peerFoundDriveKey = $state<string | null>(null)
   let findLoading = $state(false)
@@ -101,7 +121,7 @@
   let confirmDelete = $state(false)
 
   // Profile — saved state (what's in Hyperdrive)
-  let profile = $state({ name: '', bio: '', currency: 'USD' })
+  let profile = $state({ name: '', bio: '', currency: 'USD', memberSince: null as string | null })
   let profileLoaded = $state(false)
   let avatarPreviewUrl = $state<string | null>(null)
 
@@ -111,7 +131,7 @@
   let profileSaving = $state(false)
 
   function resetProfileState () {
-    profile = { name: '', bio: '', currency: 'USD' }
+    profile = { name: '', bio: '', currency: 'USD', memberSince: null }
     profileLoaded = false
     profileEditing = false
     avatarPreviewUrl = null
@@ -123,9 +143,10 @@
       const resp = await fetch('/api/get-profile')
       if (!resp.ok) return
       const data = await resp.json()
-      profile.name     = data.name     ?? ''
-      profile.bio      = data.bio      ?? ''
-      profile.currency = data.currency ?? 'USD'
+      profile.name        = data.name        ?? ''
+      profile.bio         = data.bio         ?? ''
+      profile.currency    = data.currency    ?? 'USD'
+      profile.memberSince = data.memberSince ?? null
       if (data.hasAvatar) avatarPreviewUrl = '/api/get-avatar'
       profileLoaded = true
     } catch {}
@@ -252,11 +273,10 @@
 <!-- Custom titlebar: frameless Pear window, drag region + macOS-style traffic lights -->
 <div class="titlebar">
   <div class="traffic-lights">
-    <button class="tl-btn tl-close"    onclick={() => Pear.exit(0)}                    title="Close"></button>
-    <button class="tl-btn tl-minimize" onclick={() => Pear.Window.self.minimize()}     title="Minimize"></button>
-    <button class="tl-btn tl-zoom"     onclick={() => Pear.Window.self.fullscreen()}   title="Fullscreen"></button>
+    <button class="tl-btn tl-close"    onclick={() => Pear.exit(0)}                title="Close"></button>
+    <button class="tl-btn tl-minimize" onclick={() => Pear.Window.self.minimize()} title="Minimize"></button>
+    <button class="tl-btn tl-zoom"     title="Fullscreen" disabled></button>
   </div>
-  <div class="titlebar-title">Trust Protocol • Decentralized reputation, owned by you.</div>
 </div>
 
 <main>
@@ -293,21 +313,63 @@
 
   {:else if view === 'identity'}
     <div class="identity-card">
-      <div class="qr-block">
-        {#if qrDataUrl}
-          <img src={qrDataUrl} alt="QR code" class="qr" />
-        {/if}
-        <button class="share-contact-btn" onclick={copyContactInfo}>
-          {#if contactCopied}
-            Copied!
-          {:else}
-            Copy contact key
-          {/if}
+
+      <!-- Header: avatar + name/key left, share button right -->
+      <div class="id-header">
+        <div class="id-user">
+          <div class="id-avatar">
+            {#if avatarPreviewUrl}
+              <img src={avatarPreviewUrl} alt="Avatar" class="avatar-img" />
+            {:else}
+              <div class="avatar-placeholder">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <circle cx="12" cy="8" r="4"/>
+                  <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
+                </svg>
+              </div>
+            {/if}
+          </div>
+          <div class="id-name-block">
+            <div class="id-name">{profile.name || 'Smart Peer'}</div>
+            {#if shortKey}
+              <div class="id-key">{shortKey}</div>
+            {/if}
+          </div>
+        </div>
+        <button class="share-btn" onclick={() => shareOpen = true} title="Share contact">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"
+            stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="3" r="1.5"/>
+            <circle cx="12" cy="13" r="1.5"/>
+            <circle cx="3" cy="8" r="1.5"/>
+            <line x1="10.5" y1="3.75" x2="4.5" y2="7.25"/>
+            <line x1="4.5" y1="8.75" x2="10.5" y2="12.25"/>
+          </svg>
         </button>
       </div>
-      <div class="reputation-block">
-        <!-- Reputation score will appear here in Step 6 -->
+
+      <!-- Trust volume block — deal count shown only when > 0 (wired in Step 6) -->
+      <div class="trust-block">
+        <div class="trust-label">TRUST VOLUME</div>
+        <div class="trust-amount">{currencySymbol}0</div>
       </div>
+
+      <!-- Stats row -->
+      <div class="stats-row">
+        <div class="stat-cell">
+          <div class="stat-value">0</div>
+          <div class="stat-label">Deals</div>
+        </div>
+        <div class="stat-cell">
+          <div class="stat-value">0</div>
+          <div class="stat-label">Counterparties</div>
+        </div>
+        <div class="stat-cell">
+          <div class="stat-value">{memberSinceDisplay(profile.memberSince)}</div>
+          <div class="stat-label">Membership</div>
+        </div>
+      </div>
+
     </div>
 
     <div class="action-bar">
@@ -356,6 +418,7 @@
                       <span class="profile-empty-hint">No name set</span>
                     {/if}
                   </div>
+                  <button class="edit-btn" onclick={startEdit}>Edit</button>
                 </div>
 
                 <div class="profile-view-field">
@@ -366,8 +429,6 @@
                     <div class="profile-empty-hint">No info yet</div>
                   {/if}
                 </div>
-
-                <button class="edit-btn" onclick={startEdit}>Edit profile</button>
 
               {:else}
                 <!-- EDIT MODE -->
@@ -495,6 +556,63 @@
 
       </div>
 
+  {:else if view === 'peerProfile'}
+    <div class="find-screen">
+      <button class="back-btn" onclick={() => view = 'findUser'}>← Back</button>
+
+      <div class="peer-profile-avatar-row">
+        <div class="peer-profile-avatar-wrap">
+          {#if peerProfile?.hasAvatar && peerFoundDriveKey}
+            <img src={`/api/get-peer-avatar?key=${peerFoundDriveKey}`} alt="Avatar" class="avatar-img" />
+          {:else}
+            <div class="avatar-placeholder">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <circle cx="12" cy="8" r="4"/>
+                <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
+              </svg>
+            </div>
+          {/if}
+        </div>
+        <div class="peer-profile-name-block">
+          <div class="peer-profile-name">{peerProfile?.name || 'Anonymous'}</div>
+          {#if peerShortKey}
+            <div class="peer-key-short">{peerShortKey}</div>
+          {/if}
+        </div>
+      </div>
+
+      <div class="profile-view-field">
+        <div class="field-label">About</div>
+        {#if peerProfile?.bio}
+          <div class="profile-view-value">{peerProfile.bio}</div>
+        {:else}
+          <div class="profile-empty-hint">No info yet</div>
+        {/if}
+      </div>
+
+      <!-- Trust block — populated in Step 7 when we read peer's Hypercore log -->
+      <div class="trust-block trust-block-peer">
+        <div class="trust-label">TRUST VOLUME</div>
+        <div class="trust-amount trust-amount-peer">{currencySymbol}0</div>
+      </div>
+
+      <div class="stats-row">
+        <div class="stat-cell">
+          <div class="stat-value">0</div>
+          <div class="stat-label">Deals</div>
+        </div>
+        <div class="stat-cell">
+          <div class="stat-value">0</div>
+          <div class="stat-label">Counterparties</div>
+        </div>
+        <div class="stat-cell">
+          <div class="stat-value">{memberSinceDisplay(peerProfile?.memberSince ?? null)}</div>
+          <div class="stat-label">Membership</div>
+        </div>
+      </div>
+
+    </div>
+
   {:else if view === 'findUser'}
     <div class="find-screen">
       <button class="back-btn" onclick={findReset}>← Back</button>
@@ -517,7 +635,10 @@
       </button>
 
       {#if peerProfile}
-        <div class="peer-card">
+        <div class="peer-card" role="button" tabindex="0"
+          onclick={() => view = 'peerProfile'}
+          onkeydown={(e) => e.key === 'Enter' && (view = 'peerProfile')}
+        >
           <div class="peer-avatar-row">
             <div class="avatar-wrap">
               {#if peerProfile.hasAvatar && peerFoundDriveKey}
@@ -548,6 +669,44 @@
   {/if}
 </main>
 
+<footer class="app-footer">Trust Protocol · Decentralized reputation, owned by you.</footer>
+
+<!-- Share modal — overlay with QR + copy button -->
+{#if shareOpen}
+  <div class="share-overlay" onclick={() => shareOpen = false}
+    onkeydown={(e) => e.key === 'Escape' && (shareOpen = false)}
+    role="presentation">
+    <div class="share-modal"
+      onclick={(e) => e.stopPropagation()}
+      onkeydown={(e) => e.stopPropagation()}
+      role="dialog" aria-modal="true" aria-label="Share contact" tabindex="-1">
+      <div class="share-modal-header">
+        <span class="share-modal-title">Share contact</span>
+        <button class="share-modal-close" onclick={() => shareOpen = false} aria-label="Close">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"
+            stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 3l10 10M13 3L3 13"/>
+          </svg>
+        </button>
+      </div>
+      {#if qrDataUrl}
+        <img src={qrDataUrl} alt="QR code" class="share-qr-img" />
+      {/if}
+      <button class="share-copy-btn" onclick={copyContactInfo}>
+        {#if contactCopied}
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"
+            stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 8l4 4 6-7"/>
+          </svg>
+          Copied!
+        {:else}
+          Copy contact key
+        {/if}
+      </button>
+    </div>
+  </div>
+{/if}
+
 <style>
   @font-face {
     font-family: 'gothampro';
@@ -557,7 +716,7 @@
   :global(body) {
     margin: 0;
     background-color: #1e2128;
-    background-image: url('/background.png');
+    background-image: url('/background_10.png');
     background-size: cover;
     background-position: center top;
     background-attachment: fixed;
@@ -651,30 +810,255 @@
     border-radius: 20px;
     padding: 1.5rem;
     display: flex;
-    gap: 1.5rem;
-    align-items: flex-start;
+    flex-direction: column;
+    gap: 1.25rem;
     box-shadow:
       0 8px 32px rgba(0, 0, 0, 0.4),
       inset 0 1px 0 rgba(255, 255, 255, 0.2),
       inset 0 -1px 0 rgba(0, 0, 0, 0.15);
   }
 
-  .qr-block {
-    flex-shrink: 0;
+  /* Header row: user info left, share btn right */
+  .id-header {
     display: flex;
-    flex-direction: column;
-    align-items: stretch;
+    align-items: center;
+    justify-content: space-between;
   }
 
-  .qr {
-    border-radius: 8px;
+  .id-user {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .id-avatar {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    overflow: hidden;
+    flex-shrink: 0;
+    background: #1e2128;
+    border: 1px solid #374151;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .id-name-block {
+    text-align: left;
+  }
+
+  .id-name {
+    font-size: 1rem;
+    font-weight: 600;
+    color: #f8fafc;
+    line-height: 1.3;
+  }
+
+  .id-key {
+    font-family: monospace;
+    font-size: 0.72rem;
+    color: #64748b;
+    margin-top: 0.15rem;
+  }
+
+  /* Share button — symmetric to avatar on the right */
+  .share-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    color: #64748b;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+
+  .share-btn svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .share-btn:hover {
+    background: rgba(255, 255, 255, 0.12);
+    border-color: rgba(255, 255, 255, 0.22);
+    color: #cbd5e1;
+  }
+
+  /* Trust volume block */
+  .trust-block {
+    text-align: center;
+    padding: 0.25rem 0;
+  }
+
+  .trust-label {
+    font-size: 0.65rem;
+    font-weight: 600;
+    color: #64748b;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-bottom: 0.35rem;
+  }
+
+  .trust-amount {
+    font-size: 2.4rem;
+    font-weight: 700;
+    color: #f8fafc;
+    line-height: 1;
+    letter-spacing: -0.02em;
+    margin-bottom: 0.4rem;
+  }
+
+  .trust-amount-peer {
+    font-size: 2rem;
+  }
+
+
+
+  /* Stats row: 3 equal cells */
+  .stats-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 0.5rem;
+  }
+
+  .stat-cell {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    padding: 0.6rem 0.5rem;
+    text-align: center;
+  }
+
+  .stat-value {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: #e2e8f0;
+    line-height: 1.2;
+  }
+
+  .stat-label {
+    font-size: 0.65rem;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-top: 0.25rem;
+  }
+
+  /* Trust block inside peer profile (find-screen) */
+  .trust-block-peer {
+    margin: 1.25rem 0 0.75rem;
+    padding: 1rem;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 14px;
+  }
+
+  /* Share modal overlay */
+  .share-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 200;
+  }
+
+  .share-modal {
+    background: rgba(42, 47, 58, 0.95);
+    backdrop-filter: blur(28px) saturate(180%);
+    -webkit-backdrop-filter: blur(28px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 20px;
+    padding: 1.5rem;
+    width: 260px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+    box-shadow:
+      0 16px 48px rgba(0, 0, 0, 0.6),
+      inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  }
+
+  .share-modal-header {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .share-modal-title {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: #e2e8f0;
+  }
+
+  .share-modal-close {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: #64748b;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+
+  .share-modal-close svg {
+    width: 12px;
+    height: 12px;
+  }
+
+  .share-modal-close:hover {
+    background: rgba(255, 255, 255, 0.12);
+    color: #cbd5e1;
+  }
+
+  .share-qr-img {
+    width: 200px;
+    height: 200px;
+    border-radius: 10px;
     display: block;
   }
 
-  .reputation-block {
-    flex: 1;
-    min-width: 0;
-    /* placeholder — reputation score goes here in Step 6 */
+  .share-copy-btn {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    background: rgba(255, 255, 255, 0.07);
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    color: #94a3b8;
+    border-radius: 10px;
+    padding: 0.6rem 1rem;
+    font-size: 0.85rem;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+
+  .share-copy-btn:hover {
+    background: rgba(255, 255, 255, 0.12);
+    border-color: rgba(255, 255, 255, 0.22);
+    color: #e2e8f0;
+  }
+
+  .share-copy-btn svg {
+    width: 14px;
+    height: 14px;
+    color: #34d399;
   }
 
   /* Expandable sections */
@@ -845,18 +1229,13 @@
     z-index: 100;
   }
 
-  .titlebar-title {
-    position: absolute;
-    left: 0;
-    right: 0;
+  .app-footer {
     text-align: center;
-    font-size: 0.72rem;
-    color: #64748b;
+    font-size: 0.68rem;
+    color: #374151;
+    padding: 1.5rem 0 2rem;
     pointer-events: none;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    padding: 0 100px;
+    user-select: none;
   }
 
   .traffic-lights {
@@ -984,7 +1363,6 @@
   }
 
   .save-btn {
-    margin-top: 0.25rem;
     background: #34d399;
     color: #0f1117;
     border: none;
@@ -1029,7 +1407,8 @@
   }
 
   .edit-btn {
-    margin-top: 0.5rem;
+    margin-left: auto;
+    flex-shrink: 0;
     background: transparent;
     border: 1px solid #374151;
     color: #94a3b8;
@@ -1048,6 +1427,7 @@
 
   .edit-actions {
     display: flex;
+    align-items: center;
     gap: 0.5rem;
     justify-content: flex-end;
     margin-top: 0.25rem;
@@ -1100,24 +1480,6 @@
     margin: 0.85rem 0;
   }
 
-  /* Share contact button — sits below QR, stretches to QR width */
-  .share-contact-btn {
-    margin-top: 0.5rem;
-    background: transparent;
-    border: 1px solid #374151;
-    color: #64748b;
-    border-radius: 6px;
-    padding: 0.4rem 0;
-    font-size: 0.78rem;
-    font-family: inherit;
-    cursor: pointer;
-    transition: border-color 0.15s, color 0.15s;
-  }
-
-  .share-contact-btn:hover {
-    border-color: #64748b;
-    color: #94a3b8;
-  }
 
   /* Action bar between identity card and sections */
   .action-bar {
@@ -1258,10 +1620,53 @@
   /* Peer profile result card */
   .peer-card {
     margin-top: 1.5rem;
-    background: #2a2f3a;
-    border: 1px solid #374151;
-    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 16px;
     padding: 1.25rem;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.1),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.08);
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+
+  .peer-card:hover {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.15);
+  }
+
+  /* Peer profile full-page view */
+  .peer-profile-avatar-row {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .peer-profile-avatar-wrap {
+    width: 72px;
+    height: 72px;
+    border-radius: 50%;
+    overflow: hidden;
+    flex-shrink: 0;
+    background: #1e2128;
+    border: 1px solid #374151;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .peer-profile-name-block {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .peer-profile-name {
+    font-size: 1.2rem;
+    font-weight: 600;
+    color: #f8fafc;
+    margin-bottom: 0.3rem;
   }
 
   .peer-avatar-row {

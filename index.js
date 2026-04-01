@@ -75,7 +75,8 @@ async function createDrive () {
     bio: '',
     currency: 'USD',
     hasAvatar: false,
-    avatarMime: ''
+    avatarMime: '',
+    memberSince: new Date().toISOString()
   }
   await drive.put('/profile.json', b4a.from(JSON.stringify(emptyProfile)))
 }
@@ -201,11 +202,12 @@ bridge.server.on('request', async (req, res) => {
         : { hasAvatar: false, avatarMime: '' }
 
       const profile = {
-        name:       incoming.name       ?? '',
-        bio:        incoming.bio        ?? '',
-        currency:   incoming.currency   ?? 'USD',
-        hasAvatar:  existing_profile.hasAvatar,
-        avatarMime: existing_profile.avatarMime
+        name:        incoming.name       ?? '',
+        bio:         incoming.bio        ?? '',
+        currency:    incoming.currency   ?? 'USD',
+        hasAvatar:   existing_profile.hasAvatar,
+        avatarMime:  existing_profile.avatarMime,
+        memberSince: existing_profile.memberSince ?? null
       }
 
       await drive.put('/profile.json', b4a.from(JSON.stringify(profile)))
