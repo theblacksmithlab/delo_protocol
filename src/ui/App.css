@@ -51,7 +51,7 @@ main {
 }
 
 h2 {
-  font-size: 1.4rem;
+  font-size: 18px;
   font-weight: 600;
   color: #f8fafc;
   margin: 0 0 1rem;
@@ -977,4 +977,23 @@ h2 {
   white-space: pre-wrap;
   border-top: 1px solid #374151;
   padding-top: 0.75rem;
+}
+
+.new-deal-btn {
+  background: rgba(147,210,255,0.08);
+  border: 1px solid rgba(147,210,255,0.2);
+  border-radius: 8px;
+  color: #93d2ff;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 9px 16px;
+  cursor: pointer;
+  transition: all 0.15s;
+  width: 100%;
+}
+
+.new-deal-btn:hover {
+  background: rgba(147,210,255,0.14);
+  border-color: rgba(147,210,255,0.35);
 }

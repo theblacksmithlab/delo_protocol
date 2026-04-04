@@ -77,6 +77,7 @@ pub struct Deal {
     pub amount_usdt: f64,
 
     // Deal metadata
+    pub title: String,           // short human-readable name, e.g. "BMW wheels"
     pub level: DealLevel,
     pub status: DealStatus,
     pub outcome: Option<Outcome>, // None until status == Completed
@@ -176,6 +177,7 @@ mod tests {
             amount_btc: amount * 0.000015,
             amount_eur: amount * 0.92,
             amount_usdt: amount,
+            title: "Test deal".to_string(),
             level,
             status: DealStatus::Completed,
             outcome,

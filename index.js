@@ -7,6 +7,7 @@ import crypto from 'hypercore-crypto'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, rmSync } from 'bare-fs'
 import { join } from 'bare-path'
 import b4a from 'b4a'
+import https from 'bare-https'
 import Corestore from 'corestore'
 import Hyperdrive from 'hyperdrive'
 
@@ -92,31 +93,50 @@ async function announceToSwarm () {
   swarm.join(drive.discoveryKey, { server: true, client: false })
 }
 
+
 // ---------------------------------------------------------------------------
 // Exchange rate cache
-// Rates are fetched from two public APIs (no key required):
+// Fetched in Bare because pear-electron blocks external requests from WebView.
+// APIs used (no key required):
 //   - open.er-api.com  → fiat: USD/RUB/EUR
 //   - CoinGecko        → crypto: BTC, USDT
-// Cache TTL: 5 minutes — avoids hammering APIs on every keystroke in the UI.
+// Cache TTL: 5 minutes
 // ---------------------------------------------------------------------------
 const RATE_CACHE_TTL = 5 * 60 * 1000
 let rateCache = null
 let rateCacheAt = 0
 
+function httpsGet (url) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(url, { headers: { 'User-Agent': 'TrustProtocol/0.1' } }, (res) => {
+      const chunks = []
+      res.on('data', chunk => chunks.push(chunk))
+      res.on('end', () => {
+        const body = b4a.concat(chunks).toString()
+        if (res.statusCode !== 200) {
+          return reject(new Error(`HTTP ${res.statusCode} from ${url}: ${body.slice(0, 200)}`))
+        }
+        try {
+          resolve(JSON.parse(body))
+        } catch (e) {
+          reject(new Error(`JSON parse error from ${url}: ${body.slice(0, 200)}`))
+        }
+      })
+    })
+    req.on('error', reject)
+    req.end()
+  })
+}
+
 async function fetchRates () {
   const now = Date.now()
   if (rateCache && (now - rateCacheAt) < RATE_CACHE_TTL) return rateCache
 
-  const [fiatRes, cryptoRes] = await Promise.all([
-    fetch('https://open.er-api.com/v6/latest/USD'),
-    fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,tether&vs_currencies=usd,rub,eur')
+  const [fiat, crypto] = await Promise.all([
+    httpsGet('https://open.er-api.com/v6/latest/USD'),
+    httpsGet('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,tether&vs_currencies=usd,rub,eur')
   ])
 
-  const fiat   = await fiatRes.json()
-  const crypto = await cryptoRes.json()
-
-  // Store as "how many units of X equal 1 USD"
-  // BTC price in USD (e.g. 65000) → 1 USD = 1/65000 BTC
   rateCache = {
     RUB:  fiat.rates.RUB,
     EUR:  fiat.rates.EUR,
@@ -127,25 +147,22 @@ async function fetchRates () {
   return rateCache
 }
 
-// Converts an amount in the given currency to equivalents in all supported currencies.
-// All math goes through USD as the common intermediate unit.
 function convertAmount (amount, currency, rates) {
-  let amountUsd
+  let usd
   switch (currency) {
-    case 'USD':  amountUsd = amount; break
-    case 'RUB':  amountUsd = amount / rates.RUB; break
-    case 'EUR':  amountUsd = amount / rates.EUR; break
-    case 'BTC':  amountUsd = amount / rates.BTC; break
-    case 'USDT': amountUsd = amount / rates.USDT; break
-    default:     amountUsd = amount
+    case 'USD':  usd = amount; break
+    case 'RUB':  usd = amount / rates.RUB; break
+    case 'EUR':  usd = amount / rates.EUR; break
+    case 'BTC':  usd = amount / rates.BTC; break
+    case 'USDT': usd = amount / rates.USDT; break
+    default:     usd = amount
   }
-
   return {
-    amount_usd:  amountUsd,
-    amount_rub:  amountUsd * rates.RUB,
-    amount_eur:  amountUsd * rates.EUR,
-    amount_btc:  amountUsd * rates.BTC,
-    amount_usdt: amountUsd * rates.USDT
+    amount_usd:  usd,
+    amount_rub:  usd * rates.RUB,
+    amount_eur:  usd * rates.EUR,
+    amount_btc:  usd * rates.BTC,
+    amount_usdt: usd * rates.USDT
   }
 }
 
@@ -387,8 +404,7 @@ bridge.server.on('request', async (req, res) => {
 
     // --- Exchange rates ------------------------------------------------
     // GET /api/get-rates?amount=100&currency=USD
-    // Returns equivalents in all currencies frozen at this moment.
-    // Used by "New Deal" UI before creating a deal record.
+    // Fetched in Bare — WebView can't reach external URLs (ERR_BLOCKED_BY_CLIENT)
     if (url.startsWith('/api/get-rates')) {
       const qs       = url.split('?')[1] ?? ''
       const amount   = parseFloat(qs.match(/amount=([^&]+)/)?.[1] ?? '0')
@@ -397,8 +413,7 @@ bridge.server.on('request', async (req, res) => {
       if (!amount || amount <= 0) return json({ error: 'Invalid amount' }, 400)
 
       const rates = await fetchRates()
-      const equivalents = convertAmount(amount, currency, rates)
-      return json({ ...equivalents, fetched_at: rateCacheAt })
+      return json({ ...convertAmount(amount, currency, rates), fetched_at: rateCacheAt })
     }
 
     bridgeHandler(req, res)

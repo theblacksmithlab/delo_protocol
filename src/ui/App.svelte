@@ -2,12 +2,13 @@
   import { onMount } from 'svelte'
   import QRCode from 'qrcode'
   import './App.css'
+  import NewDeal from './views/NewDeal.svelte'
 
   // 'loading'  — reading files on startup
   // 'welcome'  — no identity yet, show onboarding screen
   // 'creating' — waiting for Bare to generate keypair
   // 'identity' — keypair exists, show public key + QR
-  type View = 'loading' | 'welcome' | 'creating' | 'identity' | 'findUser' | 'peerProfile'
+  type View = 'loading' | 'welcome' | 'creating' | 'identity' | 'findUser' | 'peerProfile' | 'newDeal'
 
   let view = $state<View>('loading')
   let publicKey = $state<string | null>(null)
@@ -106,6 +107,16 @@
     } finally {
       findLoading = false
     }
+  }
+
+  // NewDeal navigation state
+  let previousView = $state<View>('identity')
+  let newDealCounterpartyKey = $state('')
+
+  function openNewDeal (from: View, cpKey = '') {
+    previousView = from
+    newDealCounterpartyKey = cpKey
+    view = 'newDeal'
   }
 
   // Accordion open/close state
@@ -495,8 +506,13 @@
             <span>Deals</span>
           </button>
           {#if dealsOpen}
-            <div class="section-body muted">
-              Deal history coming soon.
+            <div class="section-body">
+              <button class="new-deal-btn" onclick={() => openNewDeal('identity')}>
+                + New Deal
+              </button>
+              <div class="muted" style="margin-top: 12px; font-size: 13px;">
+                Deal history coming soon.
+              </div>
             </div>
           {/if}
         </div>
@@ -613,6 +629,12 @@
       </div>
 
     </div>
+
+  {:else if view === 'newDeal'}
+    <NewDeal
+      counterpartyKey={newDealCounterpartyKey}
+      onBack={() => view = previousView}
+    />
 
   {:else if view === 'findUser'}
     <div class="find-screen">
