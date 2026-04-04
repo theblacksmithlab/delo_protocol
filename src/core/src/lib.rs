@@ -1,5 +1,7 @@
 use wasm_bindgen::prelude::*;
 
+pub mod deal;
+
 // #[wasm_bindgen] exposes this function to JavaScript.
 // String return type is automatically converted to JS string.
 #[wasm_bindgen]

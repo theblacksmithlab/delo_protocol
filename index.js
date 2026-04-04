@@ -7,6 +7,7 @@ import crypto from 'hypercore-crypto'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, rmSync } from 'bare-fs'
 import { join } from 'bare-path'
 import b4a from 'b4a'
+import https from 'bare-https'
 import Corestore from 'corestore'
 import Hyperdrive from 'hyperdrive'
 
@@ -90,6 +91,79 @@ async function announceToSwarm () {
   swarm = new Hyperswarm()
   swarm.on('connection', socket => store.replicate(socket))
   swarm.join(drive.discoveryKey, { server: true, client: false })
+}
+
+
+// ---------------------------------------------------------------------------
+// Exchange rate cache
+// Fetched in Bare because pear-electron blocks external requests from WebView.
+// APIs used (no key required):
+//   - open.er-api.com  → fiat: USD/RUB/EUR
+//   - CoinGecko        → crypto: BTC, USDT
+// Cache TTL: 5 minutes
+// ---------------------------------------------------------------------------
+const RATE_CACHE_TTL = 5 * 60 * 1000
+let rateCache = null
+let rateCacheAt = 0
+
+function httpsGet (url) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(url, { headers: { 'User-Agent': 'TrustProtocol/0.1' } }, (res) => {
+      const chunks = []
+      res.on('data', chunk => chunks.push(chunk))
+      res.on('end', () => {
+        const body = b4a.concat(chunks).toString()
+        if (res.statusCode !== 200) {
+          return reject(new Error(`HTTP ${res.statusCode} from ${url}: ${body.slice(0, 200)}`))
+        }
+        try {
+          resolve(JSON.parse(body))
+        } catch (e) {
+          reject(new Error(`JSON parse error from ${url}: ${body.slice(0, 200)}`))
+        }
+      })
+    })
+    req.on('error', reject)
+    req.end()
+  })
+}
+
+async function fetchRates () {
+  const now = Date.now()
+  if (rateCache && (now - rateCacheAt) < RATE_CACHE_TTL) return rateCache
+
+  const [fiat, crypto] = await Promise.all([
+    httpsGet('https://open.er-api.com/v6/latest/USD'),
+    httpsGet('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,tether&vs_currencies=usd,rub,eur')
+  ])
+
+  rateCache = {
+    RUB:  fiat.rates.RUB,
+    EUR:  fiat.rates.EUR,
+    BTC:  1 / crypto.bitcoin.usd,
+    USDT: 1 / crypto.tether.usd
+  }
+  rateCacheAt = now
+  return rateCache
+}
+
+function convertAmount (amount, currency, rates) {
+  let usd
+  switch (currency) {
+    case 'USD':  usd = amount; break
+    case 'RUB':  usd = amount / rates.RUB; break
+    case 'EUR':  usd = amount / rates.EUR; break
+    case 'BTC':  usd = amount / rates.BTC; break
+    case 'USDT': usd = amount / rates.USDT; break
+    default:     usd = amount
+  }
+  return {
+    amount_usd:  usd,
+    amount_rub:  usd * rates.RUB,
+    amount_eur:  usd * rates.EUR,
+    amount_btc:  usd * rates.BTC,
+    amount_usdt: usd * rates.USDT
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -326,6 +400,20 @@ bridge.server.on('request', async (req, res) => {
       } finally {
         await peerSwarm.destroy()
       }
+    }
+
+    // --- Exchange rates ------------------------------------------------
+    // GET /api/get-rates?amount=100&currency=USD
+    // Fetched in Bare — WebView can't reach external URLs (ERR_BLOCKED_BY_CLIENT)
+    if (url.startsWith('/api/get-rates')) {
+      const qs       = url.split('?')[1] ?? ''
+      const amount   = parseFloat(qs.match(/amount=([^&]+)/)?.[1] ?? '0')
+      const currency = (qs.match(/currency=([^&]+)/)?.[1] ?? 'USD').toUpperCase()
+
+      if (!amount || amount <= 0) return json({ error: 'Invalid amount' }, 400)
+
+      const rates = await fetchRates()
+      return json({ ...convertAmount(amount, currency, rates), fetched_at: rateCacheAt })
     }
 
     bridgeHandler(req, res)

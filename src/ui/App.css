@@ -51,7 +51,7 @@ main {
 }
 
 h2 {
-  font-size: 1.4rem;
+  font-size: 18px;
   font-weight: 600;
   color: #f8fafc;
   margin: 0 0 1rem;
@@ -149,15 +149,15 @@ h2 {
   width: 40px;
   height: 40px;
   border-radius: 50%;
-  background: rgba(147, 210, 255, 0.07);
-  border: 1px solid rgba(147, 210, 255, 0.22);
+  background: rgba(147, 210, 255, 0.1);
+  border: 1px solid rgba(147, 210, 255, 0.3);
   color: #93d2ff;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   flex-shrink: 0;
-  box-shadow: 0 0 10px rgba(100, 180, 255, 0.12);
+  box-shadow: 0 0 14px rgba(100, 180, 255, 0.22);
   transition: background 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s;
 }
 
@@ -167,10 +167,10 @@ h2 {
 }
 
 .share-btn:hover {
-  background: rgba(147, 210, 255, 0.14);
-  border-color: rgba(147, 210, 255, 0.38);
+  background: rgba(147, 210, 255, 0.18);
+  border-color: rgba(147, 210, 255, 0.5);
   color: #c2e4ff;
-  box-shadow: 0 0 16px rgba(100, 180, 255, 0.24);
+  box-shadow: 0 0 22px rgba(100, 180, 255, 0.35);
 }
 
 /* Trust volume block */
@@ -315,32 +315,36 @@ h2 {
 }
 
 .share-copy-btn {
-  width: 100%;
+  width: 200px;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
-  background: rgba(255, 255, 255, 0.07);
-  border: 1px solid rgba(255, 255, 255, 0.13);
+  background: transparent;
+  border: 1px solid #374151;
   color: #94a3b8;
   border-radius: 10px;
   padding: 0.6rem 1rem;
   font-size: 0.85rem;
   font-family: inherit;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  transition: background 0.2s, border-color 0.2s, color 0.2s;
 }
 
 .share-copy-btn:hover {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.22);
+  border-color: #64748b;
   color: #e2e8f0;
+}
+
+.share-copy-btn.copied {
+  background: rgba(147, 210, 255, 0.12);
+  border-color: rgba(147, 210, 255, 0.28);
+  color: #93d2ff;
 }
 
 .share-copy-btn svg {
   width: 14px;
   height: 14px;
-  color: #93d2ff;
 }
 
 /* Expandable sections */
@@ -468,8 +472,9 @@ h2 {
   border: 1px solid #374151;
   color: #94a3b8;
   border-radius: 6px;
-  padding: 0.35rem 0.75rem;
-  font-size: 0.82rem;
+  padding: 0.5rem 1.1rem;
+  font-size: 0.875rem;
+  font-family: inherit;
   cursor: pointer;
   transition: border-color 0.15s, color 0.15s;
 }
@@ -584,18 +589,19 @@ h2 {
 
 .avatar-btn {
   font-size: 0.82rem;
-  color: #34d399;
+  color: #93d2ff;
   cursor: pointer;
   padding: 0.35rem 0.75rem;
-  border: 1px solid #34d39944;
+  background: transparent;
+  border: 1px solid rgba(147, 210, 255, 0.25);
   border-radius: 6px;
-  transition: background 0.15s, border-color 0.15s;
+  transition: border-color 0.15s, color 0.15s;
   font-family: inherit;
 }
 
 .avatar-btn:hover {
-  background: #34d39911;
-  border-color: #34d399;
+  border-color: rgba(147, 210, 255, 0.5);
+  color: #c2e4ff;
 }
 
 .field {
@@ -645,19 +651,19 @@ h2 {
 }
 
 .save-btn {
-  background: #34d399;
-  color: #0f1117;
-  border: none;
-  border-radius: 7px;
-  padding: 0.6rem 1.4rem;
-  font-size: 0.9rem;
+  background: rgba(147, 210, 255, 0.12);
+  color: #93d2ff;
+  border: 1px solid rgba(147, 210, 255, 0.28);
+  border-radius: 6px;
+  padding: 0.5rem 1.1rem;
+  font-size: 0.875rem;
   font-weight: 600;
   font-family: inherit;
   cursor: pointer;
-  transition: background 0.15s, opacity 0.15s;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
 }
 
-.save-btn:hover { background: #6ee7b7; }
+.save-btn:hover { background: rgba(147, 210, 255, 0.2); border-color: rgba(147, 210, 255, 0.45); }
 .save-btn:disabled { opacity: 0.5; cursor: default; }
 
 /* Profile view mode */
@@ -715,6 +721,11 @@ h2 {
   margin-top: 0.25rem;
 }
 
+.edit-actions .cancel-btn,
+.edit-actions .save-btn {
+  min-width: 88px;
+}
+
 /* Wrapper positions the custom chevron over the select */
 .currency-wrap {
   position: relative;
@@ -769,74 +780,39 @@ h2 {
   gap: 0.5rem;
 }
 
-/* Action button on main screen — icy blue tint */
-.find-user-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
-  width: 100%;
-  background: rgba(147, 210, 255, 0.08);
-  backdrop-filter: blur(28px) saturate(200%);
-  -webkit-backdrop-filter: blur(28px) saturate(200%);
-  border: 1px solid rgba(147, 210, 255, 0.22);
-  color: #93d2ff;
-  border-radius: 14px;
-  padding: 0.55rem 1rem;
-  font-size: 0.88rem;
-  font-family: inherit;
-  cursor: pointer;
-  box-shadow:
-    0 4px 20px rgba(100, 180, 255, 0.1),
-    inset 0 1px 0 rgba(200, 235, 255, 0.25);
-  transition: background 0.15s, border-color 0.15s, color 0.15s, box-shadow 0.15s;
-}
-
-.find-user-btn svg {
-  width: 14px;
-  height: 14px;
-  flex-shrink: 0;
-}
-
-.find-user-btn:hover {
-  background: rgba(147, 210, 255, 0.14);
-  border-color: rgba(147, 210, 255, 0.38);
-  color: #c2e4ff;
-  box-shadow:
-    0 6px 24px rgba(100, 180, 255, 0.18),
-    inset 0 1px 0 rgba(200, 235, 255, 0.35);
-}
-
-/* Search button inside find screen */
+/* Tier 1 glow buttons — find-user-btn and find-submit-btn share the same style */
+.find-user-btn,
 .find-submit-btn {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
   width: 100%;
-  background: rgba(255, 255, 255, 0.07);
-  backdrop-filter: blur(28px) saturate(180%);
-  -webkit-backdrop-filter: blur(28px) saturate(180%);
-  border: 1px solid rgba(255, 255, 255, 0.13);
-  color: #94a3b8;
+  background: rgba(147, 210, 255, 0.1);
+  border: 1px solid rgba(147, 210, 255, 0.3);
+  color: #93d2ff;
   border-radius: 14px;
   padding: 0.55rem 1rem;
   font-size: 0.88rem;
   font-family: inherit;
   cursor: pointer;
-  box-shadow:
-    0 4px 16px rgba(0, 0, 0, 0.25),
-    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  box-shadow: 0 0 14px rgba(100, 180, 255, 0.22), inset 0 1px 0 rgba(200, 235, 255, 0.15);
   transition: background 0.15s, border-color 0.15s, color 0.15s, box-shadow 0.15s;
 }
 
+.find-user-btn svg,
+.find-submit-btn svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.find-user-btn:hover,
 .find-submit-btn:hover {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.22);
-  color: #e2e8f0;
-  box-shadow:
-    0 6px 20px rgba(0, 0, 0, 0.3),
-    inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  background: rgba(147, 210, 255, 0.18);
+  border-color: rgba(147, 210, 255, 0.5);
+  color: #c2e4ff;
+  box-shadow: 0 0 22px rgba(100, 180, 255, 0.35), inset 0 1px 0 rgba(200, 235, 255, 0.25);
 }
 
 .find-submit-btn {
@@ -846,6 +822,18 @@ h2 {
 .find-submit-btn:disabled {
   opacity: 0.4;
   cursor: default;
+  box-shadow: none;
+  pointer-events: none;
+}
+
+/* Field inside find-screen — force same dark fill as profile edit fields */
+.find-screen .field-input {
+  background: #1e2128;
+  border-color: #374151;
+}
+
+.find-screen .field-input:focus {
+  border-color: #94a3b8;
 }
 
 /* Find user screen */
@@ -891,8 +879,10 @@ h2 {
 .find-error {
   color: #f87171;
   font-size: 0.85rem;
+  margin-top: 0.5rem;
   margin-bottom: 0.75rem;
   padding: 0.5rem 0.75rem;
+  text-align: center;
   background: #7f1d1d22;
   border: 1px solid #7f1d1d;
   border-radius: 6px;
@@ -977,4 +967,25 @@ h2 {
   white-space: pre-wrap;
   border-top: 1px solid #374151;
   padding-top: 0.75rem;
+}
+
+.new-deal-btn {
+  background: rgba(147, 210, 255, 0.1);
+  border: 1px solid rgba(147, 210, 255, 0.3);
+  border-radius: 14px;
+  color: #93d2ff;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 9px 16px;
+  cursor: pointer;
+  box-shadow: 0 0 14px rgba(100, 180, 255, 0.22);
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+  width: 100%;
+}
+
+.new-deal-btn:hover {
+  background: rgba(147, 210, 255, 0.18);
+  border-color: rgba(147, 210, 255, 0.5);
+  box-shadow: 0 0 22px rgba(100, 180, 255, 0.35);
 }

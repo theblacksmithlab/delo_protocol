@@ -2,12 +2,13 @@
   import { onMount } from 'svelte'
   import QRCode from 'qrcode'
   import './App.css'
+  import NewDeal from './views/NewDeal.svelte'
 
   // 'loading'  — reading files on startup
   // 'welcome'  — no identity yet, show onboarding screen
   // 'creating' — waiting for Bare to generate keypair
   // 'identity' — keypair exists, show public key + QR
-  type View = 'loading' | 'welcome' | 'creating' | 'identity' | 'findUser' | 'peerProfile'
+  type View = 'loading' | 'welcome' | 'creating' | 'identity' | 'findUser' | 'peerProfile' | 'newDeal'
 
   let view = $state<View>('loading')
   let publicKey = $state<string | null>(null)
@@ -106,6 +107,16 @@
     } finally {
       findLoading = false
     }
+  }
+
+  // NewDeal navigation state
+  let previousView = $state<View>('identity')
+  let newDealCounterpartyKey = $state('')
+
+  function openNewDeal (from: View, cpKey = '') {
+    previousView = from
+    newDealCounterpartyKey = cpKey
+    view = 'newDeal'
   }
 
   // Accordion open/close state
@@ -495,8 +506,13 @@
             <span>Deals</span>
           </button>
           {#if dealsOpen}
-            <div class="section-body muted">
-              Deal history coming soon.
+            <div class="section-body">
+              <div class="muted" style="font-size: 13px; margin-bottom: 12px;">
+                Deal history coming soon.
+              </div>
+              <button class="new-deal-btn" onclick={() => openNewDeal('identity')}>
+                + New Deal
+              </button>
             </div>
           {/if}
         </div>
@@ -614,6 +630,12 @@
 
     </div>
 
+  {:else if view === 'newDeal'}
+    <NewDeal
+      counterpartyKey={newDealCounterpartyKey}
+      onBack={() => view = previousView}
+    />
+
   {:else if view === 'findUser'}
     <div class="find-screen">
       <button class="back-btn" onclick={findReset}>← Back</button>
@@ -693,7 +715,7 @@
       {#if qrDataUrl}
         <img src={qrDataUrl} alt="QR code" class="share-qr-img" />
       {/if}
-      <button class="share-copy-btn" onclick={copyContactInfo}>
+      <button class="share-copy-btn" class:copied={contactCopied} onclick={copyContactInfo}>
         {#if contactCopied}
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"
             stroke-linecap="round" stroke-linejoin="round">
