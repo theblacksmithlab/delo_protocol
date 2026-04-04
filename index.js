@@ -93,6 +93,63 @@ async function announceToSwarm () {
 }
 
 // ---------------------------------------------------------------------------
+// Exchange rate cache
+// Rates are fetched from two public APIs (no key required):
+//   - open.er-api.com  → fiat: USD/RUB/EUR
+//   - CoinGecko        → crypto: BTC, USDT
+// Cache TTL: 5 minutes — avoids hammering APIs on every keystroke in the UI.
+// ---------------------------------------------------------------------------
+const RATE_CACHE_TTL = 5 * 60 * 1000
+let rateCache = null
+let rateCacheAt = 0
+
+async function fetchRates () {
+  const now = Date.now()
+  if (rateCache && (now - rateCacheAt) < RATE_CACHE_TTL) return rateCache
+
+  const [fiatRes, cryptoRes] = await Promise.all([
+    fetch('https://open.er-api.com/v6/latest/USD'),
+    fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,tether&vs_currencies=usd,rub,eur')
+  ])
+
+  const fiat   = await fiatRes.json()
+  const crypto = await cryptoRes.json()
+
+  // Store as "how many units of X equal 1 USD"
+  // BTC price in USD (e.g. 65000) → 1 USD = 1/65000 BTC
+  rateCache = {
+    RUB:  fiat.rates.RUB,
+    EUR:  fiat.rates.EUR,
+    BTC:  1 / crypto.bitcoin.usd,
+    USDT: 1 / crypto.tether.usd
+  }
+  rateCacheAt = now
+  return rateCache
+}
+
+// Converts an amount in the given currency to equivalents in all supported currencies.
+// All math goes through USD as the common intermediate unit.
+function convertAmount (amount, currency, rates) {
+  let amountUsd
+  switch (currency) {
+    case 'USD':  amountUsd = amount; break
+    case 'RUB':  amountUsd = amount / rates.RUB; break
+    case 'EUR':  amountUsd = amount / rates.EUR; break
+    case 'BTC':  amountUsd = amount / rates.BTC; break
+    case 'USDT': amountUsd = amount / rates.USDT; break
+    default:     amountUsd = amount
+  }
+
+  return {
+    amount_usd:  amountUsd,
+    amount_rub:  amountUsd * rates.RUB,
+    amount_eur:  amountUsd * rates.EUR,
+    amount_btc:  amountUsd * rates.BTC,
+    amount_usdt: amountUsd * rates.USDT
+  }
+}
+
+// ---------------------------------------------------------------------------
 // HTTP body reader — collects streamed request body into a single Buffer
 // ---------------------------------------------------------------------------
 function readBody (req) {
@@ -326,6 +383,22 @@ bridge.server.on('request', async (req, res) => {
       } finally {
         await peerSwarm.destroy()
       }
+    }
+
+    // --- Exchange rates ------------------------------------------------
+    // GET /api/get-rates?amount=100&currency=USD
+    // Returns equivalents in all currencies frozen at this moment.
+    // Used by "New Deal" UI before creating a deal record.
+    if (url.startsWith('/api/get-rates')) {
+      const qs       = url.split('?')[1] ?? ''
+      const amount   = parseFloat(qs.match(/amount=([^&]+)/)?.[1] ?? '0')
+      const currency = (qs.match(/currency=([^&]+)/)?.[1] ?? 'USD').toUpperCase()
+
+      if (!amount || amount <= 0) return json({ error: 'Invalid amount' }, 400)
+
+      const rates = await fetchRates()
+      const equivalents = convertAmount(amount, currency, rates)
+      return json({ ...equivalents, fetched_at: rateCacheAt })
     }
 
     bridgeHandler(req, res)

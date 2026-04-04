@@ -39,12 +39,13 @@ pub enum Outcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum DealStatus {
-    Initiated,   // created by initiator, awaiting counterparty response
-    InProgress,  // counterparty acknowledged, not yet completed
-    Completed,   // both parties signed, outcome recorded
-    Disputed,    // one party contested the deal (Phase 2)
+    Initiated,             // initiator created the deal, awaiting counterparty response
+    PendingCounterparty,   // counterparty entered their terms, awaiting initiator confirmation
+    InProgress,            // initiator confirmed terms match, deal is executing offline
+    Completed,             // deal closed, outcome recorded
+    Disputed,              // one party contested the deal (Phase 2)
 }
 
 // --- Main struct ---
@@ -79,6 +80,10 @@ pub struct Deal {
     pub level: DealLevel,
     pub status: DealStatus,
     pub outcome: Option<Outcome>, // None until status == Completed
+
+    // Terms — what each party commits to do
+    pub initiator_terms: String,             // filled at deal creation
+    pub counterparty_terms: Option<String>,  // filled when counterparty responds
 
     // Review fields (only populated for DealLevel::Review)
     pub review_text: Option<String>,
@@ -174,6 +179,8 @@ mod tests {
             level,
             status: DealStatus::Completed,
             outcome,
+            initiator_terms: "Deliver 10 units by Friday".to_string(),
+            counterparty_terms: Some("Pay $100 on delivery".to_string()),
             review_text: None,
             rating_quality: None,
             rating_timing: None,
