@@ -507,12 +507,12 @@
           </button>
           {#if dealsOpen}
             <div class="section-body">
+              <div class="muted" style="font-size: 13px; margin-bottom: 12px;">
+                Deal history coming soon.
+              </div>
               <button class="new-deal-btn" onclick={() => openNewDeal('identity')}>
                 + New Deal
               </button>
-              <div class="muted" style="margin-top: 12px; font-size: 13px;">
-                Deal history coming soon.
-              </div>
             </div>
           {/if}
         </div>
@@ -715,7 +715,7 @@
       {#if qrDataUrl}
         <img src={qrDataUrl} alt="QR code" class="share-qr-img" />
       {/if}
-      <button class="share-copy-btn" onclick={copyContactInfo}>
+      <button class="share-copy-btn" class:copied={contactCopied} onclick={copyContactInfo}>
         {#if contactCopied}
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"
             stroke-linecap="round" stroke-linejoin="round">

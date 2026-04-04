@@ -105,7 +105,7 @@
   <button class="back-btn" onclick={onBack}>← Back</button>
   <div class="screen-header">
     <h2 class="screen-title">New Deal</h2>
-    <div class="status-badge">Initiated</div>
+    <div class="status-badge">Initializing...</div>
   </div>
 
   <div class="form">
@@ -344,8 +344,8 @@
   }
 
   .level-btn.active {
-    background: rgba(147,210,255,0.12);
-    border-color: rgba(147,210,255,0.45);
+    background: rgba(147, 210, 255, 0.12);
+    border-color: rgba(147, 210, 255, 0.28);
     color: #93d2ff;
   }
 
@@ -375,27 +375,30 @@
   }
 
   .submit-btn {
-    background: rgba(147,210,255,0.15);
-    border: 1px solid rgba(147,210,255,0.3);
-    border-radius: 8px;
+    background: rgba(147, 210, 255, 0.1);
+    border: 1px solid rgba(147, 210, 255, 0.3);
+    border-radius: 14px;
     color: #93d2ff;
     font-family: inherit;
     font-size: 14px;
     font-weight: 600;
     padding: 12px;
     cursor: pointer;
-    transition: all 0.15s;
+    box-shadow: 0 0 14px rgba(100, 180, 255, 0.22);
+    transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
     margin-top: 4px;
   }
 
   .submit-btn:hover:not(:disabled) {
-    background: rgba(147,210,255,0.22);
-    border-color: rgba(147,210,255,0.5);
+    background: rgba(147, 210, 255, 0.18);
+    border-color: rgba(147, 210, 255, 0.5);
+    box-shadow: 0 0 22px rgba(100, 180, 255, 0.35);
   }
 
   .submit-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+    box-shadow: none;
   }
 
   .back-btn {
