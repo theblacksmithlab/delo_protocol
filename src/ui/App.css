@@ -18,6 +18,19 @@ main {
 
 .muted { color: #94a3b8; }
 
+/* Deal status badge colors — applied dynamically via string interpolation, must be global */
+/* Default border-color for .deal-badge — overridden by status classes below */
+.deal-badge { border-color: transparent; }
+
+.status-initiated                { color: #64748b; border-color: rgba(100,116,139,0.25); }
+.status-pending-counterparty     { color: #f59e0b; border-color: rgba(245,158,11,0.25);   background: rgba(245,158,11,0.06); }
+.status-pending-initiator        { color: #93d2ff; border-color: rgba(147,210,255,0.3);   background: rgba(147,210,255,0.08); }
+.status-in-progress              { color: #93d2ff; border-color: rgba(147,210,255,0.35);  background: rgba(147,210,255,0.1); box-shadow: 0 0 8px rgba(100,180,255,0.25); }
+.status-completed                { color: #34d399; border-color: rgba(52,211,153,0.3);    background: rgba(52,211,153,0.07); }
+.status-cancelled-by-initiator   { color: #64748b; border-color: rgba(100,116,139,0.2); }
+.status-cancelled-by-counterparty{ color: #f87171; border-color: rgba(248,113,113,0.28); background: rgba(248,113,113,0.06); }
+.status-expired                  { color: #4a5568; border-color: rgba(100,116,139,0.15); }
+
 .error {
   background: #2a2f3a;
   border: 1px solid #7f1d1d;
@@ -284,27 +297,27 @@ h2 {
 }
 
 .share-modal-close {
-  width: 28px;
-  height: 28px;
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: #64748b;
+  background: transparent;
+  border: 1px solid #374151;
+  color: #94a3b8;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s;
+  transition: border-color 0.15s, color 0.15s;
 }
 
 .share-modal-close svg {
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
 }
 
 .share-modal-close:hover {
-  background: rgba(255, 255, 255, 0.12);
-  color: #cbd5e1;
+  border-color: #64748b;
+  color: #e2e8f0;
 }
 
 .share-qr-img {
@@ -337,9 +350,13 @@ h2 {
 }
 
 .share-copy-btn.copied {
-  background: rgba(147, 210, 255, 0.12);
-  border-color: rgba(147, 210, 255, 0.28);
   color: #93d2ff;
+  animation: copy-contact-flash 2s ease-out forwards;
+}
+
+@keyframes copy-contact-flash {
+  0%   { border-color: rgba(147,210,255,0.5); box-shadow: 0 0 0 2px rgba(147,210,255,0.2); background-color: rgba(147,210,255,0.08); }
+  100% { border-color: #374151;               box-shadow: none;                             background-color: transparent;            }
 }
 
 .share-copy-btn svg {
@@ -759,8 +776,8 @@ h2 {
 
 /* Green flash on save — fades out over 2s */
 @keyframes saved-flash {
-  0%   { border-color: #34d399; box-shadow: 0 0 0 2px #34d39933; background-color: #34d39918; }
-  100% { border-color: #374151; box-shadow: none;                 background-color: #1e2128;   }
+  0%   { border-color: rgba(147,210,255,0.5); box-shadow: 0 0 0 2px rgba(147,210,255,0.2); background-color: rgba(147,210,255,0.08); }
+  100% { border-color: #374151;               box-shadow: none;                             background-color: #1e2128;                }
 }
 
 .currency-saved {
@@ -988,4 +1005,32 @@ h2 {
   background: rgba(147, 210, 255, 0.18);
   border-color: rgba(147, 210, 255, 0.5);
   box-shadow: 0 0 22px rgba(100, 180, 255, 0.35);
+}
+
+.new-deal-from-profile-btn {
+  margin-top: 1.25rem;
+  width: 100%;
+  background: rgba(147, 210, 255, 0.1);
+  border: 1px solid rgba(147, 210, 255, 0.3);
+  border-radius: 14px;
+  color: #93d2ff;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 12px;
+  cursor: pointer;
+  box-shadow: 0 0 14px rgba(100, 180, 255, 0.22);
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+
+.new-deal-from-profile-btn:hover {
+  background: rgba(147, 210, 255, 0.18);
+  border-color: rgba(147, 210, 255, 0.5);
+  box-shadow: 0 0 22px rgba(100, 180, 255, 0.35);
+}
+
+.new-deal-from-profile-btn:disabled {
+  opacity: 0.4;
+  box-shadow: none;
+  pointer-events: none;
 }

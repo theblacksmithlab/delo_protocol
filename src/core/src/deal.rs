@@ -41,11 +41,15 @@ pub enum Outcome {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DealStatus {
-    Initiated,             // initiator created the deal, awaiting counterparty response
-    PendingCounterparty,   // counterparty entered their terms, awaiting initiator confirmation
-    InProgress,            // initiator confirmed terms match, deal is executing offline
-    Completed,             // deal closed, outcome recorded
-    Disputed,              // one party contested the deal (Phase 2)
+    Initiated,               // initiator created the deal, awaiting delivery to counterparty
+    PendingCounterparty,     // delivered, counterparty must fill their terms and respond
+    PendingInitiator,        // counterparty responded, initiator must review and confirm
+    InProgress,              // both parties confirmed, deal is executing
+    Completed,               // deal closed, outcome recorded
+    CancelledByInitiator,    // initiator cancelled before in_progress
+    CancelledByCounterparty, // counterparty cancelled before in_progress
+    Expired,                 // 24h window passed without reaching in_progress
+    Disputed,                // one party contested the deal (Phase 2)
 }
 
 // --- Main struct ---
@@ -301,6 +305,31 @@ mod tests {
         assert!(json.contains("\"review\""));
         assert!(json.contains("\"negative\""));
         assert!(json.contains("\"completed\""));
+    }
+
+    #[test]
+    fn pending_initiator_serializes_as_snake_case() {
+        let mut deal = make_deal(DealLevel::Handshake, None, 50.0);
+        deal.status = DealStatus::PendingInitiator;
+        let json = serde_json::to_string(&deal).expect("serialization failed");
+        assert!(json.contains("\"pending_initiator\""));
+    }
+
+    #[test]
+    fn cancelled_and_expired_statuses_serialize_correctly() {
+        let mut deal = make_deal(DealLevel::Handshake, None, 50.0);
+
+        deal.status = DealStatus::CancelledByInitiator;
+        let json = serde_json::to_string(&deal).unwrap();
+        assert!(json.contains("\"cancelled_by_initiator\""));
+
+        deal.status = DealStatus::CancelledByCounterparty;
+        let json = serde_json::to_string(&deal).unwrap();
+        assert!(json.contains("\"cancelled_by_counterparty\""));
+
+        deal.status = DealStatus::Expired;
+        let json = serde_json::to_string(&deal).unwrap();
+        assert!(json.contains("\"expired\""));
     }
 }
 

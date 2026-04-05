@@ -3,12 +3,14 @@
   import QRCode from 'qrcode'
   import './App.css'
   import NewDeal from './views/NewDeal.svelte'
+  import DealList from './views/DealList.svelte'
+  import DealView from './views/DealView.svelte'
 
   // 'loading'  — reading files on startup
   // 'welcome'  — no identity yet, show onboarding screen
   // 'creating' — waiting for Bare to generate keypair
   // 'identity' — keypair exists, show public key + QR
-  type View = 'loading' | 'welcome' | 'creating' | 'identity' | 'findUser' | 'peerProfile' | 'newDeal'
+  type View = 'loading' | 'welcome' | 'creating' | 'identity' | 'findUser' | 'peerProfile' | 'newDeal' | 'dealView'
 
   let view = $state<View>('loading')
   let publicKey = $state<string | null>(null)
@@ -117,6 +119,15 @@
     previousView = from
     newDealCounterpartyKey = cpKey
     view = 'newDeal'
+  }
+
+  // DealView navigation state
+  let currentDeal = $state<any>(null)
+
+  function openDealView (deal: any) {
+    currentDeal = deal
+    previousView = view
+    view = 'dealView'
   }
 
   // Accordion open/close state
@@ -507,12 +518,11 @@
           </button>
           {#if dealsOpen}
             <div class="section-body">
-              <div class="muted" style="font-size: 13px; margin-bottom: 12px;">
-                Deal history coming soon.
-              </div>
-              <button class="new-deal-btn" onclick={() => openNewDeal('identity')}>
-                + New Deal
-              </button>
+              <DealList
+                myPublicKey={publicKey ?? ''}
+                onNewDeal={() => openNewDeal('identity')}
+                onViewDeal={openDealView}
+              />
             </div>
           {/if}
         </div>
@@ -628,7 +638,22 @@
         </div>
       </div>
 
+      <button
+        class="new-deal-from-profile-btn"
+        onclick={() => openNewDeal('peerProfile', peerPublicKey ?? '')}
+        disabled={!peerPublicKey}
+      >
+        + New Deal with {peerProfile?.name || peerShortKey || 'this user'}
+      </button>
+
     </div>
+
+  {:else if view === 'dealView' && currentDeal}
+    <DealView
+      deal={currentDeal}
+      myPublicKey={publicKey ?? ''}
+      onBack={() => view = previousView}
+    />
 
   {:else if view === 'newDeal'}
     <NewDeal

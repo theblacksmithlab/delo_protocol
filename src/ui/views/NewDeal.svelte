@@ -26,6 +26,7 @@
   // Submission state
   let loading    = $state(false)
   let error      = $state<string | null>(null)
+  let createdId  = $state<string | null>(null)  // set after successful creation
 
   const isKeyReadonly = initialKey.length > 0
 
@@ -87,11 +88,15 @@
         expires_at:        now + 86400
       }
 
-      // Transport not yet implemented — log for now
-      console.log('[NewDeal] deal object ready:', deal)
+      const res = await fetch('/api/create-deal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(deal)
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to create deal')
 
-      // TODO: POST to /api/create-deal in next step
-      alert('Deal object created — check console. Transport coming next.')
+      createdId = data.id
 
     } catch (e) {
       error = e instanceof Error ? e.message : 'Unknown error'
@@ -103,6 +108,17 @@
 
 <div class="new-deal-screen">
   <button class="back-btn" onclick={onBack}>← Back</button>
+
+  {#if createdId}
+    <div class="success-screen">
+      <div class="success-icon">✓</div>
+      <div class="success-title">Deal Sent</div>
+      <div class="success-sub">Waiting for counterparty to respond</div>
+      <div class="success-id">{createdId.slice(0, 16)}…</div>
+      <button class="submit-btn" onclick={onBack}>Back to Deals</button>
+    </div>
+  {:else}
+
   <div class="screen-header">
     <h2 class="screen-title">New Deal</h2>
     <div class="status-badge">Initializing...</div>
@@ -206,6 +222,7 @@
     </button>
 
   </div>
+  {/if}
 </div>
 
 <style>
@@ -415,5 +432,44 @@
 
   .back-btn:hover {
     color: #e2e8f0;
+  }
+
+  .success-screen {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding: 40px 16px;
+    text-align: center;
+  }
+
+  .success-icon {
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    background: rgba(147, 210, 255, 0.1);
+    border: 1px solid rgba(147, 210, 255, 0.3);
+    color: #93d2ff;
+    font-size: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .success-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: #e2e8f0;
+  }
+
+  .success-sub {
+    font-size: 13px;
+    color: #7a8599;
+  }
+
+  .success-id {
+    font-size: 11px;
+    color: #4a5568;
+    font-family: monospace;
   }
 </style>

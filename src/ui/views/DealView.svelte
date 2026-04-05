@@ -1,0 +1,408 @@
+<script lang="ts">
+  type Deal = {
+    id: string
+    title: string
+    initiator_key: string
+    counterparty_key: string
+    original_amount: number
+    original_currency: string
+    amount_usd: number
+    amount_rub: number
+    amount_eur: number
+    amount_btc: number
+    amount_usdt: number
+    level: string
+    status: string
+    timestamp: number
+    expires_at: number
+    initiator_terms: string
+    counterparty_terms: string | null
+    delivered: boolean
+  }
+
+  let { deal, myPublicKey, onBack } = $props<{
+    deal: Deal
+    myPublicKey: string
+    onBack: () => void
+  }>()
+
+  let now           = $state(Math.floor(Date.now() / 1000))
+  let cancelling    = $state(false)
+  let confirmCancel = $state(false)
+  let cancelError   = $state<string | null>(null)
+
+  $effect(() => {
+    const tick = setInterval(() => { now = Math.floor(Date.now() / 1000) }, 60_000)
+    return () => clearInterval(tick)
+  })
+
+  const isInitiator = $derived(deal.initiator_key === myPublicKey)
+  const otherKey    = $derived(isInitiator ? deal.counterparty_key : deal.initiator_key)
+
+  const isNegotiating = $derived(
+    deal.status === 'initiated' ||
+    deal.status === 'pending_counterparty' ||
+    deal.status === 'pending_initiator'
+  )
+
+  function shortKey (hex: string): string {
+    return '0x' + hex.slice(0, 6) + '...' + hex.slice(-6)
+  }
+
+  function timeLeft (expiresAt: number): string {
+    const secs = expiresAt - now
+    if (secs <= 0) return 'Expired'
+    const h = Math.floor(secs / 3600)
+    const m = Math.floor((secs % 3600) / 60)
+    if (h > 0) return `${h}h ${m}m`
+    return `${m}m`
+  }
+
+  function isUrgent (expiresAt: number): boolean {
+    return (expiresAt - now) < 3600
+  }
+
+  function formatEquivalents (deal: Deal): string {
+    const parts = []
+    if (deal.original_currency !== 'USD')  parts.push(`$${deal.amount_usd.toFixed(2)}`)
+    if (deal.original_currency !== 'RUB')  parts.push(`₽${Math.round(deal.amount_rub).toLocaleString('ru-RU')}`)
+    if (deal.original_currency !== 'EUR')  parts.push(`€${deal.amount_eur.toFixed(2)}`)
+    if (deal.original_currency !== 'BTC')  parts.push(`₿${deal.amount_btc.toFixed(8).replace(/\.?0+$/, '')}`)
+    return parts.slice(0, 3).join(' · ')
+  }
+
+  function formatAmount (deal: Deal): string {
+    const cur = deal.original_currency.toUpperCase()
+    const amt = deal.original_amount
+    if (cur === 'BTC') return amt.toFixed(8).replace(/\.?0+$/, '') + ' BTC'
+    return amt.toLocaleString('en-US', { maximumFractionDigits: 2 }) + ' ' + cur
+  }
+
+  const LEVEL_LABEL: Record<string, string> = {
+    handshake: 'Handshake  ·  0.4×',
+    review:    'Review  ·  0.7×',
+    escrow:    'Escrow  ·  1.0×',
+  }
+
+  const STATUS_LABEL: Record<string, string> = {
+    initiated:               'Delivering',
+    pending_counterparty:    'Awaiting response',
+    pending_initiator:       'Action required',
+    in_progress:             'In progress',
+    completed:               'Completed',
+    cancelled_by_initiator:   'Cancelled by you',
+    cancelled_by_counterparty:'Cancelled by counterparty',
+    expired:                 'Not concluded',
+  }
+
+  async function cancelDeal () {
+    cancelling = true
+    cancelError = null
+    try {
+      const res = await fetch('/api/cancel-deal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: deal.id, role: isInitiator ? 'initiator' : 'counterparty' })
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.error || 'Failed to cancel')
+      }
+      onBack()
+    } catch (e) {
+      cancelError = e instanceof Error ? e.message : 'Unknown error'
+      confirmCancel = false
+    } finally {
+      cancelling = false
+    }
+  }
+</script>
+
+<div class="deal-view">
+  <button class="back-btn" onclick={onBack}>← Back</button>
+
+  <!-- Header -->
+  <div class="view-header">
+    <h2 class="view-title">{deal.title}</h2>
+    <span class="deal-badge status-{deal.status.replace(/_/g, '-')}">
+      {STATUS_LABEL[deal.status] ?? deal.status}
+    </span>
+  </div>
+
+  <div class="fields">
+
+    <!-- Deal ID -->
+    <div class="field">
+      <div class="field-label">Deal ID</div>
+      <div class="field-mono">{shortKey(deal.id)}</div>
+    </div>
+
+    <!-- Role + counterparty -->
+    <div class="field">
+      <div class="field-label">Your role</div>
+      <div class="field-value">{isInitiator ? 'Initiator' : 'Counterparty'}</div>
+    </div>
+
+    <div class="field">
+      <div class="field-label">Counterparty</div>
+      <div class="field-mono">{shortKey(otherKey)}</div>
+    </div>
+
+    <!-- Amount -->
+    <div class="field">
+      <div class="field-label">Amount</div>
+      <div class="field-value amount-primary">{formatAmount(deal)}</div>
+      <div class="field-equivalents">{formatEquivalents(deal)}</div>
+    </div>
+
+    <!-- Level -->
+    <div class="field">
+      <div class="field-label">Deal Level</div>
+      <div class="field-value">{LEVEL_LABEL[deal.level] ?? deal.level}</div>
+    </div>
+
+    <!-- Timer (only while negotiating) -->
+    {#if isNegotiating}
+      <div class="field">
+        <div class="field-label">Expires in</div>
+        <div class="field-value timer" class:urgent={isUrgent(deal.expires_at)}>
+          {timeLeft(deal.expires_at)}
+        </div>
+      </div>
+    {/if}
+
+    <!-- Initiator terms -->
+    <div class="field">
+      <div class="field-label">Initiator terms</div>
+      <div class="field-value field-multiline">{deal.initiator_terms}</div>
+    </div>
+
+    <!-- Counterparty terms -->
+    <div class="field">
+      <div class="field-label">Counterparty terms</div>
+      {#if deal.counterparty_terms}
+        <div class="field-value field-multiline">{deal.counterparty_terms}</div>
+      {:else}
+        <div class="field-placeholder">Waiting for counterparty terms</div>
+      {/if}
+    </div>
+
+  </div>
+
+  <!-- Cancel — only for active negotiation deals -->
+  {#if isNegotiating}
+    <div class="cancel-wrap">
+      {#if cancelError}
+        <div class="cancel-error">{cancelError}</div>
+      {/if}
+
+      {#if !confirmCancel}
+        <button class="cancel-deal-btn" onclick={() => confirmCancel = true}>
+          Cancel Deal
+        </button>
+      {:else}
+        <div class="cancel-confirm-stack">
+          <button class="keep-deal-btn" onclick={() => confirmCancel = false}>
+            Keep Deal
+          </button>
+          <button class="confirm-cancel-btn" onclick={cancelDeal} disabled={cancelling}>
+            {cancelling ? 'Cancelling...' : 'Yes, Cancel Deal'}
+          </button>
+        </div>
+      {/if}
+    </div>
+  {/if}
+</div>
+
+<style>
+  .deal-view {
+    padding: 16px;
+    text-align: left;
+  }
+
+  .back-btn {
+    background: none;
+    border: none;
+    color: #7a8599;
+    font-family: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    padding: 0;
+    transition: color 0.15s;
+  }
+  .back-btn:hover { color: #e2e8f0; }
+
+  .view-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: 8px 0 20px;
+    gap: 12px;
+  }
+
+  .view-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: #e2e8f0;
+    margin: 0;
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Status badge — same classes as DealList */
+  .deal-badge {
+    flex-shrink: 0;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    padding: 3px 10px;
+    border-radius: 20px;
+    border-width: 1px;
+    border-style: solid;
+    /* border-color lives in App.css — set via .status-* global classes */
+  }
+
+  /* status-* classes live in App.css (global) — applied dynamically via string interpolation */
+
+  .fields {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .field-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: #4a5568;
+  }
+
+  .field-value {
+    font-size: 14px;
+    color: #e2e8f0;
+  }
+
+  .field-mono {
+    font-size: 13px;
+    color: #94a3b8;
+    font-family: monospace;
+    letter-spacing: 0.02em;
+  }
+
+  .amount-primary {
+    font-size: 16px;
+    font-weight: 600;
+    color: #e2e8f0;
+  }
+
+  .field-equivalents {
+    font-size: 12px;
+    color: #4a5568;
+    margin-top: 1px;
+  }
+
+  .field-multiline {
+    line-height: 1.6;
+    white-space: pre-wrap;
+  }
+
+  .field-placeholder {
+    font-size: 13px;
+    color: #374151;
+    font-style: italic;
+  }
+
+  .timer { font-size: 15px; font-weight: 600; color: #94a3b8; font-variant-numeric: tabular-nums; }
+  .timer.urgent { color: #f59e0b; }
+
+  /* Cancel section */
+  .cancel-wrap {
+    margin-top: 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  /* Tier 3 ghost — red: initial "Cancel Deal" trigger */
+  .cancel-deal-btn {
+    width: 100%;
+    background: transparent;
+    border: 1px solid rgba(248, 113, 113, 0.3);
+    border-radius: 8px;
+    color: #f87171;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    padding: 11px;
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .cancel-deal-btn:hover {
+    border-color: rgba(248, 113, 113, 0.55);
+    color: #fca5a5;
+  }
+
+  /* Confirmation stack: stacked vertically */
+  .cancel-confirm-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  /* Tier 4 neutral — "Keep Deal" */
+  .keep-deal-btn {
+    width: 100%;
+    background: transparent;
+    border: 1px solid #374151;
+    border-radius: 8px;
+    color: #94a3b8;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    padding: 11px;
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .keep-deal-btn:hover { border-color: #64748b; color: #e2e8f0; }
+
+  /* Glow red — "Yes, Cancel Deal" */
+  .confirm-cancel-btn {
+    width: 100%;
+    background: rgba(248, 113, 113, 0.1);
+    border: 1px solid rgba(248, 113, 113, 0.3);
+    border-radius: 14px;
+    color: #f87171;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    padding: 12px;
+    cursor: pointer;
+    box-shadow: 0 0 14px rgba(248, 113, 113, 0.22);
+    transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+  }
+  .confirm-cancel-btn:hover {
+    background: rgba(248, 113, 113, 0.18);
+    border-color: rgba(248, 113, 113, 0.5);
+    box-shadow: 0 0 22px rgba(248, 113, 113, 0.35);
+  }
+  .confirm-cancel-btn:disabled { opacity: 0.4; box-shadow: none; pointer-events: none; }
+
+  .cancel-error {
+    font-size: 12px;
+    color: #f87171;
+    background: rgba(248,113,113,0.08);
+    border: 1px solid rgba(248,113,113,0.2);
+    border-radius: 6px;
+    padding: 8px 10px;
+  }
+</style>
