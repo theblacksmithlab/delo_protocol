@@ -203,6 +203,45 @@
     }
   }
 
+  // Notifications
+  let hasNotification = $state(false)
+
+  function playNotificationSound () {
+    try {
+      const ctx = new AudioContext()
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+      osc.type = 'sine'
+      osc.frequency.setValueAtTime(1047, ctx.currentTime)           // C6
+      osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15) // A5
+      gain.gain.setValueAtTime(0.25, ctx.currentTime)
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.6)
+      osc.start(ctx.currentTime)
+      osc.stop(ctx.currentTime + 0.6)
+    } catch {}
+  }
+
+  async function pollNotifications () {
+    try {
+      const res = await fetch('/api/get-notifications')
+      if (!res.ok) return
+      const notifications = await res.json()
+      if (notifications.length > 0) {
+        hasNotification = true
+        playNotificationSound()
+      }
+    } catch {}
+  }
+
+  $effect(() => {
+    if (view === 'identity') {
+      const interval = setInterval(pollNotifications, 10_000)
+      return () => clearInterval(interval)
+    }
+  })
+
   // Saves currency immediately when user changes the select in Settings
   let currencySaved = $state(false)
 
@@ -300,6 +339,7 @@
     <button class="tl-btn tl-minimize" onclick={() => Pear.Window.self.minimize()} title="Minimize"></button>
     <button class="tl-btn tl-zoom"     title="Fullscreen" disabled></button>
   </div>
+
 </div>
 
 <main>
@@ -335,6 +375,15 @@
     <div class="card muted">Generating your identity...</div>
 
   {:else if view === 'identity'}
+    <div class="identity-card-wrap">
+      {#if hasNotification}
+        <button class="notif-bell" onclick={() => { hasNotification = false }} title="New activity">
+          <svg viewBox="0 0 20 20" fill="currentColor">
+            <path d="M10 2a6 6 0 00-6 6v2.586l-.707.707A1 1 0 004 13h12a1 1 0 00.707-1.707L16 10.586V8a6 6 0 00-6-6zM10 18a3 3 0 01-2.83-2h5.66A3 3 0 0110 18z"/>
+          </svg>
+          <span class="notif-dot"></span>
+        </button>
+      {/if}
     <div class="identity-card">
 
       <!-- Header: avatar + name/key left, share button right -->
@@ -394,6 +443,7 @@
       </div>
 
     </div>
+    </div><!-- end identity-card-wrap -->
 
     <div class="action-bar">
       <button class="find-user-btn" onclick={() => { peerInput = ''; peerProfile = null; peerPublicKey = null; peerFoundDriveKey = null; findError = null; view = 'findUser' }}>

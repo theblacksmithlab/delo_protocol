@@ -112,9 +112,9 @@
   {#if createdId}
     <div class="success-screen">
       <div class="success-icon">✓</div>
-      <div class="success-title">Deal Sent</div>
-      <div class="success-sub">Waiting for counterparty to respond</div>
+      <div class="success-title">Deal Initiated</div>
       <div class="success-id">{createdId.slice(0, 16)}…</div>
+      <div class="success-sub">Waiting for counterparty to respond</div>
       <button class="submit-btn" onclick={onBack}>Back to Deals</button>
     </div>
   {:else}

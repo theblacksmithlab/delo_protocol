@@ -533,6 +533,53 @@ h2 {
   z-index: 100;
 }
 
+/* Notification bell — floats outside identity card top-right, same level as share button */
+.identity-card-wrap {
+  position: relative;
+}
+
+.notif-bell {
+  position: absolute;
+  /* share-btn is 40px, card padding 1.5rem ≈ 24px → center: 24 + 20 = 44px from card top */
+  top: calc(1.5rem + 20px);
+  right: -8px;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: #93d2ff;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  animation: bell-pulse 2s ease-in-out infinite;
+}
+
+.notif-bell svg {
+  width: 16px;
+  height: 16px;
+  filter: drop-shadow(0 0 4px rgba(147, 210, 255, 0.7));
+}
+
+.notif-dot {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 6px;
+  background: #f87171;
+  border-radius: 50%;
+  border: 1px solid #1a1e26;
+}
+
+@keyframes bell-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.5; }
+}
+
 .app-footer {
   text-align: center;
   font-size: 0.68rem;
@@ -562,7 +609,7 @@ h2 {
 
 .tl-close    { background: #ff5f57; }
 .tl-minimize { background: #febc2e; }
-.tl-zoom     { background: #28c840; }
+.tl-zoom     { background: #28c840; opacity: 0.3; cursor: default; }
 
 .tl-btn:hover { filter: brightness(0.85); }
 

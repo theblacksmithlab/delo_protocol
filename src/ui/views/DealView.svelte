@@ -31,6 +31,13 @@
   let confirmCancel = $state(false)
   let cancelError   = $state<string | null>(null)
 
+  let counterpartyTermsInput = $state('')
+  let approving              = $state(false)
+  let approveError           = $state<string | null>(null)
+
+  let confirming    = $state(false)
+  let confirmError  = $state<string | null>(null)
+
   $effect(() => {
     const tick = setInterval(() => { now = Math.floor(Date.now() / 1000) }, 60_000)
     return () => clearInterval(tick)
@@ -93,6 +100,49 @@
     cancelled_by_initiator:   'Cancelled by you',
     cancelled_by_counterparty:'Cancelled by counterparty',
     expired:                 'Not concluded',
+  }
+
+  async function approveDeal () {
+    if (!counterpartyTermsInput.trim()) return
+    approving = true
+    approveError = null
+    try {
+      const res = await fetch('/api/approve-deal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: deal.id, counterparty_terms: counterpartyTermsInput.trim() })
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.error || 'Failed to approve')
+      }
+      onBack()
+    } catch (e) {
+      approveError = e instanceof Error ? e.message : 'Unknown error'
+    } finally {
+      approving = false
+    }
+  }
+
+  async function confirmDeal () {
+    confirming = true
+    confirmError = null
+    try {
+      const res = await fetch('/api/confirm-deal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: deal.id })
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.error || 'Failed to confirm')
+      }
+      onBack()
+    } catch (e) {
+      confirmError = e instanceof Error ? e.message : 'Unknown error'
+    } finally {
+      confirming = false
+    }
   }
 
   async function cancelDeal () {
@@ -189,8 +239,77 @@
 
   </div>
 
-  <!-- Cancel — only for active negotiation deals -->
-  {#if isNegotiating}
+  <!-- Counterparty approve UI — shown when counterparty views a pending_counterparty incoming deal -->
+  {#if !isInitiator && deal.status === 'pending_counterparty'}
+    <div class="action-wrap">
+      <div class="field">
+        <div class="field-label">Your terms</div>
+        <textarea
+          class="terms-input"
+          placeholder="Describe your conditions, deliverables, timeline..."
+          bind:value={counterpartyTermsInput}
+          rows="4"
+        ></textarea>
+      </div>
+
+      {#if approveError}
+        <div class="action-error">{approveError}</div>
+      {/if}
+
+      <div class="action-buttons">
+        <button
+          class="reject-btn"
+          onclick={() => confirmCancel = true}
+          disabled={approving}
+        >
+          Reject
+        </button>
+        <button
+          class="approve-btn"
+          onclick={approveDeal}
+          disabled={approving || !counterpartyTermsInput.trim()}
+        >
+          {approving ? 'Sending...' : 'Approve'}
+        </button>
+      </div>
+
+      {#if confirmCancel}
+        <div class="cancel-confirm-stack">
+          <button class="keep-deal-btn" onclick={() => confirmCancel = false}>Keep Deal</button>
+          <button class="confirm-cancel-btn" onclick={cancelDeal} disabled={cancelling}>
+            {cancelling ? 'Rejecting...' : 'Yes, Reject Deal'}
+          </button>
+        </div>
+      {/if}
+    </div>
+  {/if}
+
+  <!-- Initiator confirm UI — shown when initiator has pending_initiator status -->
+  {#if isInitiator && deal.status === 'pending_initiator'}
+    <div class="action-wrap">
+      {#if confirmError}
+        <div class="action-error">{confirmError}</div>
+      {/if}
+      <button class="confirm-deal-btn" onclick={confirmDeal} disabled={confirming}>
+        {confirming ? 'Confirming...' : 'Confirm Deal'}
+      </button>
+      <button class="cancel-deal-btn" onclick={() => confirmCancel = true} disabled={confirming}>
+        Cancel Deal
+      </button>
+      {#if confirmCancel}
+        <div class="cancel-confirm-stack">
+          <button class="keep-deal-btn" onclick={() => confirmCancel = false}>Keep Deal</button>
+          <button class="confirm-cancel-btn" onclick={cancelDeal} disabled={cancelling}>
+            {cancelling ? 'Cancelling...' : 'Yes, Cancel Deal'}
+          </button>
+        </div>
+      {/if}
+    </div>
+  {/if}
+
+  <!-- Cancel — only for initiated deals (pending_counterparty and pending_initiator
+       have cancel embedded in their own action blocks above) -->
+  {#if deal.status === 'initiated'}
     <div class="cancel-wrap">
       {#if cancelError}
         <div class="cancel-error">{cancelError}</div>
@@ -324,6 +443,88 @@
 
   .timer { font-size: 15px; font-weight: 600; color: #94a3b8; font-variant-numeric: tabular-nums; }
   .timer.urgent { color: #f59e0b; }
+
+  /* Approve / confirm action blocks */
+  .action-wrap {
+    margin-top: 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .terms-input {
+    width: 100%;
+    box-sizing: border-box;
+    background: #1e2128;
+    border: 1px solid #374151;
+    border-radius: 8px;
+    color: #e2e8f0;
+    font-family: inherit;
+    font-size: 14px;
+    padding: 10px 12px;
+    outline: none;
+    resize: vertical;
+    line-height: 1.55;
+    transition: border-color 0.15s;
+  }
+  .terms-input:focus { border-color: #64748b; }
+  .terms-input::placeholder { color: #374151; }
+
+  .action-buttons {
+    display: flex;
+    gap: 8px;
+  }
+
+  /* Tier 1 glow — Approve / Confirm */
+  .approve-btn, .confirm-deal-btn {
+    flex: 1;
+    background: rgba(147, 210, 255, 0.1);
+    border: 1px solid rgba(147, 210, 255, 0.3);
+    border-radius: 14px;
+    color: #93d2ff;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    padding: 12px;
+    cursor: pointer;
+    box-shadow: 0 0 14px rgba(100, 180, 255, 0.22);
+    transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+    width: 100%;
+  }
+  .approve-btn:hover, .confirm-deal-btn:hover {
+    background: rgba(147, 210, 255, 0.18);
+    border-color: rgba(147, 210, 255, 0.5);
+    box-shadow: 0 0 22px rgba(100, 180, 255, 0.35);
+  }
+  .approve-btn:disabled, .confirm-deal-btn:disabled {
+    opacity: 0.4; box-shadow: none; pointer-events: none;
+  }
+
+  /* Tier 3 ghost red — Reject */
+  .reject-btn {
+    flex: 0 0 auto;
+    background: transparent;
+    border: 1px solid rgba(248, 113, 113, 0.3);
+    border-radius: 8px;
+    color: #f87171;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    padding: 12px 20px;
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .reject-btn:hover { border-color: rgba(248, 113, 113, 0.55); color: #fca5a5; }
+  .reject-btn:disabled { opacity: 0.4; pointer-events: none; }
+
+  .action-error {
+    font-size: 12px;
+    color: #f87171;
+    background: rgba(248,113,113,0.08);
+    border: 1px solid rgba(248,113,113,0.2);
+    border-radius: 6px;
+    padding: 8px 10px;
+  }
 
   /* Cancel section */
   .cancel-wrap {

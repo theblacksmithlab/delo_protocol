@@ -33,6 +33,10 @@ const pendingDeliveries = new Map()
 // If the user is currently viewing one of these deals, the UI redirects to main.
 const expiredDealIds = new Set()
 
+// Pending notifications for the WebView.
+// Each entry: { type, dealId, title } — pushed from message handlers, cleared after read.
+const pendingNotifications = []
+
 // ---------------------------------------------------------------------------
 // Keypair helpers
 // ---------------------------------------------------------------------------
@@ -160,6 +164,28 @@ function handleIncomingMessage (socket) {
       }
     }
 
+    // Counterparty approved the deal and sent their terms back to us (initiator).
+    // Update our local /pending/deals/ copy: set counterparty_terms + status pending_initiator.
+    if (msg.type === 'deal_response') {
+      try {
+        await handleDealResponse(msg)
+        response = { type: 'deal_ack', dealId: msg.dealId }
+      } catch (e) {
+        response = { type: 'error', reason: String(e) }
+      }
+    }
+
+    // Initiator confirmed the deal after reviewing counterparty terms.
+    // Update our local /incoming/deals/ copy: set status in_progress.
+    if (msg.type === 'deal_confirmed') {
+      try {
+        await handleDealConfirmed(msg)
+        response = { type: 'deal_ack', dealId: msg.dealId }
+      } catch (e) {
+        response = { type: 'error', reason: String(e) }
+      }
+    }
+
     socket.write(b4a.from(JSON.stringify(response)))
     socket.end()
   })
@@ -195,7 +221,9 @@ async function handleIncomingDeal ({ dealId, senderDriveKey }) {
     const dealBuf = await senderDrive.get(`/pending/deals/${dealId}.json`)
     if (!dealBuf) throw new Error(`Deal ${dealId} not found in sender drive`)
 
+    const saved = JSON.parse(b4a.toString(dealBuf))
     await drive.put(`/incoming/deals/${dealId}.json`, dealBuf)
+    pendingNotifications.push({ type: 'new_deal', dealId, title: saved.title ?? 'New deal' })
   } finally {
     await peerSwarm.destroy()
   }
@@ -217,8 +245,35 @@ async function handleIncomingCancellation ({ dealId, cancelledBy }) {
     await drive.put(`/history/deals/${dealId}.json`, b4a.from(JSON.stringify(deal)))
     await drive.del(`${folder}/${dealId}.json`).catch(() => {})
     expiredDealIds.add(dealId) // reuse expired signal — WebView will navigate away
+    pendingNotifications.push({ type: 'deal_cancelled', dealId, title: deal.title ?? 'Deal' })
     return
   }
+}
+
+// Called when initiator receives deal_response from counterparty.
+// Counterparty has approved the deal and sent their terms.
+// We update our /pending/deals/ copy: set counterparty_terms + status pending_initiator.
+async function handleDealResponse ({ dealId, counterpartyTerms }) {
+  if (!drive) return
+  const buf = await drive.get(`/pending/deals/${dealId}.json`).catch(() => null)
+  if (!buf) return
+  const deal = JSON.parse(b4a.toString(buf))
+  deal.counterparty_terms = counterpartyTerms
+  deal.status = 'pending_initiator'
+  await drive.put(`/pending/deals/${dealId}.json`, b4a.from(JSON.stringify(deal)))
+  pendingNotifications.push({ type: 'deal_response', dealId, title: deal.title ?? 'Deal' })
+}
+
+// Called when counterparty receives deal_confirmed from initiator.
+// Initiator has reviewed our terms and confirmed — we move to in_progress.
+async function handleDealConfirmed ({ dealId }) {
+  if (!drive) return
+  const buf = await drive.get(`/incoming/deals/${dealId}.json`).catch(() => null)
+  if (!buf) return
+  const deal = JSON.parse(b4a.toString(buf))
+  deal.status = 'in_progress'
+  await drive.put(`/incoming/deals/${dealId}.json`, b4a.from(JSON.stringify(deal)))
+  pendingNotifications.push({ type: 'deal_confirmed', dealId, title: deal.title ?? 'Deal' })
 }
 
 // Attempt to deliver a deal_request message to a counterparty.
@@ -816,6 +871,58 @@ bridge.server.on('request', async (req, res) => {
       return json({ ok: true })
     }
 
+    // --- Deal: approve -----------------------------------------------
+    // POST /api/approve-deal  { id, counterparty_terms }
+    // Counterparty fills their terms and approves the deal.
+    // Updates local /incoming/deals/ copy, delivers terms to initiator via msgSwarm.
+    if (url === '/api/approve-deal') {
+      if (!drive) return json({ error: 'drive not ready' }, 500)
+      const body = await readBody(req)
+      const { id, counterparty_terms } = JSON.parse(b4a.toString(body))
+
+      const buf = await drive.get(`/incoming/deals/${id}.json`).catch(() => null)
+      if (!buf) return json({ error: 'deal not found' }, 404)
+
+      const deal = JSON.parse(b4a.toString(buf))
+      deal.counterparty_terms = counterparty_terms
+      deal.status = 'pending_initiator'
+      await drive.put(`/incoming/deals/${id}.json`, b4a.from(JSON.stringify(deal)))
+
+      // Deliver terms to initiator — fire and forget with best-effort retry
+      sendDealToPeer(deal.initiator_key, id, {
+        type: 'deal_response',
+        dealId: id,
+        counterpartyTerms: counterparty_terms
+      }).catch(() => {})
+
+      return json({ ok: true })
+    }
+
+    // --- Deal: confirm -----------------------------------------------
+    // POST /api/confirm-deal  { id }
+    // Initiator reviews counterparty terms and confirms — both sides go in_progress.
+    // Updates local /pending/deals/ copy, notifies counterparty via msgSwarm.
+    if (url === '/api/confirm-deal') {
+      if (!drive) return json({ error: 'drive not ready' }, 500)
+      const body = await readBody(req)
+      const { id } = JSON.parse(b4a.toString(body))
+
+      const buf = await drive.get(`/pending/deals/${id}.json`).catch(() => null)
+      if (!buf) return json({ error: 'deal not found' }, 404)
+
+      const deal = JSON.parse(b4a.toString(buf))
+      deal.status = 'in_progress'
+      await drive.put(`/pending/deals/${id}.json`, b4a.from(JSON.stringify(deal)))
+
+      // Notify counterparty — fire and forget
+      sendDealToPeer(deal.counterparty_key, id, {
+        type: 'deal_confirmed',
+        dealId: id
+      }).catch(() => {})
+
+      return json({ ok: true })
+    }
+
     // --- Deal: history ------------------------------------------------
     // GET /api/get-history-deals
     // Returns completed, expired, and cancelled deals from /history/deals/.
@@ -833,6 +940,15 @@ bridge.server.on('request', async (req, res) => {
       const ids = [...expiredDealIds]
       expiredDealIds.clear()
       return json(ids)
+    }
+
+    // --- Notifications ------------------------------------------------
+    // GET /api/get-notifications
+    // Returns pending notifications and clears them. WebView polls every 10s.
+    if (url === '/api/get-notifications') {
+      const notifications = [...pendingNotifications]
+      pendingNotifications.length = 0
+      return json(notifications)
     }
 
     bridgeHandler(req, res)
