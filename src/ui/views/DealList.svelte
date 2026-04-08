@@ -76,15 +76,30 @@
     return (expiresAt - now) < 3600
   }
 
-  const STATUS_LABEL: Record<string, string> = {
-    initiated:               'Delivering',
-    pending_counterparty:    'Awaiting response',
-    pending_initiator:       'Action required',
-    in_progress:             'In progress',
-    completed:               'Completed',
-    cancelled_by_initiator:   'Cancelled by you',
-    cancelled_by_counterparty:'Cancelled by counterparty',
-    expired:                 'Not concluded',
+  function statusLabel (deal: Deal): string {
+    const out = isOutgoing(deal)
+    switch (deal.status) {
+      case 'initiated':                return 'Delivering'
+      case 'pending_counterparty':     return out ? 'Awaiting response' : 'Action required'
+      case 'pending_initiator':        return out ? 'Action required'   : 'Awaiting response'
+      case 'in_progress':              return 'In progress'
+      case 'completed':                return 'Completed'
+      case 'cancelled_by_initiator':   return out ? 'Cancelled by you'  : 'Cancelled by initiator'
+      case 'cancelled_by_counterparty':return out ? 'Cancelled by counterparty' : 'Cancelled by you'
+      case 'expired':                  return 'Not concluded'
+      default:                         return deal.status
+    }
+  }
+
+  // CSS class for the badge — direction-aware for negotiation statuses.
+  // "You wait" → orange (pending-counterparty), "Your turn" → blue (pending-initiator).
+  function statusClass (deal: Deal): string {
+    const out = isOutgoing(deal)
+    if (deal.status === 'pending_counterparty')
+      return out ? 'status-pending-initiator' : 'status-pending-counterparty'
+    if (deal.status === 'pending_initiator')
+      return out ? 'status-pending-counterparty' : 'status-pending-initiator'
+    return 'status-' + deal.status.replace(/_/g, '-')
   }
 
   // Only truly "negative" endings get muted — completed stays bright (positive outcome)
@@ -120,8 +135,8 @@
             <span class="deal-direction">
               {isOutgoing(deal) ? '↑ Outgoing' : '↓ Incoming'}
             </span>
-            <span class="deal-badge status-{deal.status.replace(/_/g, '-')}">
-              {STATUS_LABEL[deal.status] ?? deal.status}
+            <span class="deal-badge {statusClass(deal)}">
+              {statusLabel(deal)}
             </span>
           </div>
 
@@ -158,7 +173,7 @@
 
   .deals-state {
     font-size: 13px;
-    color: #4a5568;
+    color: #64748b;
     padding: 8px 0 4px;
     text-align: left;
   }
@@ -217,7 +232,7 @@
     font-weight: 600;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: #4a5568;
+    color: #64748b;
   }
 
   /* Status badge */
@@ -243,7 +258,7 @@
   .deal-title {
     font-size: 14px;
     font-weight: 600;
-    color: #e2e8f0;
+    color: #f0f4f8;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -253,12 +268,13 @@
   .deal-counterparty {
     font-size: 11px;
     color: #64748b;
+    margin-top: 4px;
   }
 
   /* Deal ID — mirrors .id-key, most muted */
   .deal-id {
     font-size: 10px;
-    color: #374151;
+    color: #64748b;
     letter-spacing: 0.02em;
   }
 
@@ -291,9 +307,9 @@
     border-radius: 14px;
     color: #93d2ff;
     font-family: inherit;
-    font-size: 14px;
+    font-size: 0.88rem;
     font-weight: 600;
-    padding: 12px;
+    padding: 0.55rem 1rem;
     cursor: pointer;
     box-shadow: 0 0 14px rgba(100, 180, 255, 0.22);
     transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;

@@ -91,15 +91,18 @@
     escrow:    'Escrow  ·  1.0×',
   }
 
-  const STATUS_LABEL: Record<string, string> = {
-    initiated:               'Delivering',
-    pending_counterparty:    'Awaiting response',
-    pending_initiator:       'Action required',
-    in_progress:             'In progress',
-    completed:               'Completed',
-    cancelled_by_initiator:   'Cancelled by you',
-    cancelled_by_counterparty:'Cancelled by counterparty',
-    expired:                 'Not concluded',
+  function statusLabel (status: string): string {
+    switch (status) {
+      case 'initiated':                return 'Delivering'
+      case 'pending_counterparty':     return isInitiator ? 'Awaiting response' : 'Action required'
+      case 'pending_initiator':        return isInitiator ? 'Action required'   : 'Awaiting response'
+      case 'in_progress':             return 'In progress'
+      case 'completed':               return 'Completed'
+      case 'cancelled_by_initiator':  return isInitiator ? 'Cancelled by you'  : 'Cancelled by initiator'
+      case 'cancelled_by_counterparty': return isInitiator ? 'Cancelled by counterparty' : 'Cancelled by you'
+      case 'expired':                 return 'Not concluded'
+      default:                        return status
+    }
   }
 
   async function approveDeal () {
@@ -175,7 +178,7 @@
   <div class="view-header">
     <h2 class="view-title">{deal.title}</h2>
     <span class="deal-badge status-{deal.status.replace(/_/g, '-')}">
-      {STATUS_LABEL[deal.status] ?? deal.status}
+      {statusLabel(deal.status)}
     </span>
   </div>
 
@@ -335,14 +338,25 @@
 
 <style>
   .deal-view {
-    padding: 16px;
+    display: flex;
+    flex-direction: column;
     text-align: left;
+    background: rgba(255, 255, 255, 0.07);
+    backdrop-filter: blur(28px) saturate(180%);
+    -webkit-backdrop-filter: blur(28px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    border-radius: 20px;
+    padding: 1.5rem;
+    box-shadow:
+      0 8px 32px rgba(0, 0, 0, 0.4),
+      inset 0 1px 0 rgba(255, 255, 255, 0.2),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.15);
   }
 
   .back-btn {
     background: none;
     border: none;
-    color: #7a8599;
+    color: #64748b;
     font-family: inherit;
     font-size: 13px;
     cursor: pointer;
@@ -362,7 +376,7 @@
   .view-title {
     font-size: 18px;
     font-weight: 600;
-    color: #e2e8f0;
+    color: #f0f4f8;
     margin: 0;
     flex: 1;
     min-width: 0;
@@ -374,10 +388,10 @@
   /* Status badge — same classes as DealList */
   .deal-badge {
     flex-shrink: 0;
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 600;
     letter-spacing: 0.04em;
-    padding: 3px 10px;
+    padding: 5px 12px;
     border-radius: 20px;
     border-width: 1px;
     border-style: solid;
@@ -403,12 +417,12 @@
     font-weight: 600;
     letter-spacing: 0.07em;
     text-transform: uppercase;
-    color: #4a5568;
+    color: #64748b;
   }
 
   .field-value {
     font-size: 14px;
-    color: #e2e8f0;
+    color: #94a3b8;
   }
 
   .field-mono {
@@ -421,12 +435,12 @@
   .amount-primary {
     font-size: 16px;
     font-weight: 600;
-    color: #e2e8f0;
+    color: #f0f4f8;
   }
 
   .field-equivalents {
     font-size: 12px;
-    color: #4a5568;
+    color: #64748b;
     margin-top: 1px;
   }
 
@@ -437,7 +451,7 @@
 
   .field-placeholder {
     font-size: 13px;
-    color: #374151;
+    color: #64748b;
     font-style: italic;
   }
 
@@ -458,7 +472,7 @@
     background: #1e2128;
     border: 1px solid #374151;
     border-radius: 8px;
-    color: #e2e8f0;
+    color: #f0f4f8;
     font-family: inherit;
     font-size: 14px;
     padding: 10px 12px;
@@ -468,7 +482,7 @@
     transition: border-color 0.15s;
   }
   .terms-input:focus { border-color: #64748b; }
-  .terms-input::placeholder { color: #374151; }
+  .terms-input::placeholder { color: #64748b; }
 
   .action-buttons {
     display: flex;
@@ -483,9 +497,9 @@
     border-radius: 14px;
     color: #93d2ff;
     font-family: inherit;
-    font-size: 14px;
+    font-size: 0.88rem;
     font-weight: 600;
-    padding: 12px;
+    padding: 0.55rem 1rem;
     cursor: pointer;
     box-shadow: 0 0 14px rgba(100, 180, 255, 0.22);
     transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
@@ -505,12 +519,12 @@
     flex: 0 0 auto;
     background: transparent;
     border: 1px solid rgba(248, 113, 113, 0.3);
-    border-radius: 8px;
+    border-radius: 7px;
     color: #f87171;
     font-family: inherit;
-    font-size: 14px;
+    font-size: 0.875rem;
     font-weight: 600;
-    padding: 12px 20px;
+    padding: 0.5rem 1.1rem;
     cursor: pointer;
     transition: border-color 0.15s, color 0.15s;
   }
@@ -539,12 +553,12 @@
     width: 100%;
     background: transparent;
     border: 1px solid rgba(248, 113, 113, 0.3);
-    border-radius: 8px;
+    border-radius: 7px;
     color: #f87171;
     font-family: inherit;
-    font-size: 14px;
+    font-size: 0.875rem;
     font-weight: 600;
-    padding: 11px;
+    padding: 0.5rem 1.1rem;
     cursor: pointer;
     transition: border-color 0.15s, color 0.15s;
   }
@@ -565,12 +579,12 @@
     width: 100%;
     background: transparent;
     border: 1px solid #374151;
-    border-radius: 8px;
+    border-radius: 7px;
     color: #94a3b8;
     font-family: inherit;
-    font-size: 14px;
+    font-size: 0.875rem;
     font-weight: 600;
-    padding: 11px;
+    padding: 0.5rem 1.1rem;
     cursor: pointer;
     transition: border-color 0.15s, color 0.15s;
   }
@@ -584,9 +598,9 @@
     border-radius: 14px;
     color: #f87171;
     font-family: inherit;
-    font-size: 14px;
+    font-size: 0.88rem;
     font-weight: 600;
-    padding: 12px;
+    padding: 0.55rem 1rem;
     cursor: pointer;
     box-shadow: 0 0 14px rgba(248, 113, 113, 0.22);
     transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;

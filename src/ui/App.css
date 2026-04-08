@@ -1,3 +1,12 @@
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.52);
+  pointer-events: none;
+  z-index: 0;
+}
+
 main {
   display: block;
   width: 100%;
@@ -6,6 +15,8 @@ main {
   padding: 0 1.5rem 2rem;
   padding-top: calc(38px + 2.5rem);
   box-sizing: border-box;
+  position: relative;
+  z-index: 1;
 }
 
 /* Shared card base */
@@ -22,14 +33,14 @@ main {
 /* Default border-color for .deal-badge — overridden by status classes below */
 .deal-badge { border-color: transparent; }
 
-.status-initiated                { color: #64748b; border-color: rgba(100,116,139,0.25); }
-.status-pending-counterparty     { color: #f59e0b; border-color: rgba(245,158,11,0.25);   background: rgba(245,158,11,0.06); }
-.status-pending-initiator        { color: #93d2ff; border-color: rgba(147,210,255,0.3);   background: rgba(147,210,255,0.08); }
-.status-in-progress              { color: #93d2ff; border-color: rgba(147,210,255,0.35);  background: rgba(147,210,255,0.1); box-shadow: 0 0 8px rgba(100,180,255,0.25); }
+.status-initiated                { color: #93d2ff; border-color: rgba(147,210,255,0.4);  background: rgba(147,210,255,0.1); }
+.status-pending-counterparty     { color: #f59e0b; border-color: rgba(245,158,11,0.3);   background: rgba(245,158,11,0.08); box-shadow: 0 0 8px rgba(245,158,11,0.2); }
+.status-pending-initiator        { color: #93d2ff; border-color: rgba(147,210,255,0.4);   background: rgba(147,210,255,0.1); }
+.status-in-progress              { color: #93d2ff; border-color: rgba(147,210,255,0.4);   background: rgba(147,210,255,0.1);  box-shadow: 0 0 10px rgba(100,180,255,0.3); }
 .status-completed                { color: #34d399; border-color: rgba(52,211,153,0.3);    background: rgba(52,211,153,0.07); }
 .status-cancelled-by-initiator   { color: #64748b; border-color: rgba(100,116,139,0.2); }
 .status-cancelled-by-counterparty{ color: #f87171; border-color: rgba(248,113,113,0.28); background: rgba(248,113,113,0.06); }
-.status-expired                  { color: #4a5568; border-color: rgba(100,116,139,0.15); }
+.status-expired                  { color: #64748b; border-color: rgba(100,116,139,0.15); }
 
 .error {
   background: #2a2f3a;
@@ -66,7 +77,7 @@ main {
 h2 {
   font-size: 18px;
   font-weight: 600;
-  color: #f8fafc;
+  color: #f0f4f8;
   margin: 0 0 1rem;
 }
 
@@ -146,7 +157,7 @@ h2 {
 .id-name {
   font-size: 1rem;
   font-weight: 600;
-  color: #f8fafc;
+  color: #f0f4f8;
   line-height: 1.3;
 }
 
@@ -204,7 +215,7 @@ h2 {
 .trust-amount {
   font-size: 2.4rem;
   font-weight: 700;
-  color: #f8fafc;
+  color: #f0f4f8;
   line-height: 1;
   letter-spacing: -0.02em;
   margin-bottom: 0.4rem;
@@ -232,7 +243,7 @@ h2 {
 .stat-value {
   font-size: 1.15rem;
   font-weight: 700;
-  color: #e2e8f0;
+  color: #f0f4f8;
   line-height: 1.2;
 }
 
@@ -293,7 +304,7 @@ h2 {
 .share-modal-title {
   font-size: 0.9rem;
   font-weight: 600;
-  color: #e2e8f0;
+  color: #f0f4f8;
 }
 
 .share-modal-close {
@@ -317,7 +328,7 @@ h2 {
 
 .share-modal-close:hover {
   border-color: #64748b;
-  color: #e2e8f0;
+  color: #f0f4f8;
 }
 
 .share-qr-img {
@@ -346,7 +357,7 @@ h2 {
 
 .share-copy-btn:hover {
   border-color: #64748b;
-  color: #e2e8f0;
+  color: #f0f4f8;
 }
 
 .share-copy-btn.copied {
@@ -393,7 +404,7 @@ h2 {
   padding: 0.85rem 1rem;
   background: none;
   border: none;
-  color: #cbd5e1;
+  color: #94a3b8;
   font-size: 0.95rem;
   font-weight: 500;
   font-family: inherit;
@@ -403,7 +414,7 @@ h2 {
 }
 
 .section-header:hover {
-  color: #f8fafc;
+  color: #f0f4f8;
 }
 
 /* Chevron rotates 90° when section is open */
@@ -441,7 +452,7 @@ h2 {
 }
 
 .setting-name {
-  color: #e2e8f0;
+  color: #f0f4f8;
   font-size: 0.9rem;
   font-weight: 500;
   margin-bottom: 0.2rem;
@@ -540,9 +551,10 @@ h2 {
 
 .notif-bell {
   position: absolute;
-  /* share-btn is 40px, card padding 1.5rem ≈ 24px → center: 24 + 20 = 44px from card top */
+  /* mirror of share-btn: padding(1.5rem) + half-btn(20px) inside → same distance outside */
+  /* bell width ≈ 16px → right edge at 44 + 8 = 52px outside card right edge */
   top: calc(1.5rem + 20px);
-  right: -8px;
+  right: calc(-1.5rem - 28px);
   transform: translateY(-50%);
   background: none;
   border: none;
@@ -581,12 +593,16 @@ h2 {
 }
 
 .app-footer {
+  position: fixed;
+  bottom: 1.25rem;
+  left: 0;
+  right: 0;
   text-align: center;
   font-size: 0.68rem;
   color: #374151;
-  padding: 1.5rem 0 2rem;
   pointer-events: none;
   user-select: none;
+  z-index: 50;
 }
 
 .traffic-lights {
@@ -643,7 +659,7 @@ h2 {
 .avatar-placeholder {
   width: 28px;
   height: 28px;
-  color: #4b5563;
+  color: #64748b;
 }
 
 .avatar-placeholder svg {
@@ -687,7 +703,7 @@ h2 {
   background: #1e2128;
   border: 1px solid #374151;
   border-radius: 7px;
-  color: #e2e8f0;
+  color: #f0f4f8;
   font-size: 0.9rem;
   font-family: inherit;
   padding: 0.55rem 0.75rem;
@@ -700,7 +716,7 @@ h2 {
 }
 
 .field-input::placeholder {
-  color: #4b5563;
+  color: #64748b;
 }
 
 .field-textarea {
@@ -738,12 +754,12 @@ h2 {
 .profile-name-text {
   font-size: 1rem;
   font-weight: 600;
-  color: #f8fafc;
+  color: #f0f4f8;
 }
 
 .profile-empty-hint {
   font-size: 0.85rem;
-  color: #4b5563;
+  color: #64748b;
   font-style: italic;
 }
 
@@ -752,7 +768,7 @@ h2 {
 }
 
 .profile-view-value {
-  color: #cbd5e1;
+  color: #94a3b8;
   font-size: 0.9rem;
   line-height: 1.55;
   white-space: pre-wrap;
@@ -774,7 +790,7 @@ h2 {
 
 .edit-btn:hover {
   border-color: #64748b;
-  color: #e2e8f0;
+  color: #f0f4f8;
 }
 
 .edit-actions {
@@ -1000,7 +1016,7 @@ h2 {
 .peer-profile-name {
   font-size: 1.2rem;
   font-weight: 600;
-  color: #f8fafc;
+  color: #f0f4f8;
   margin-bottom: 0.3rem;
 }
 
@@ -1014,7 +1030,7 @@ h2 {
 .peer-name {
   font-size: 1rem;
   font-weight: 600;
-  color: #f8fafc;
+  color: #f0f4f8;
   margin-bottom: 0.2rem;
 }
 
@@ -1033,26 +1049,6 @@ h2 {
   padding-top: 0.75rem;
 }
 
-.new-deal-btn {
-  background: rgba(147, 210, 255, 0.1);
-  border: 1px solid rgba(147, 210, 255, 0.3);
-  border-radius: 14px;
-  color: #93d2ff;
-  font-family: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  padding: 9px 16px;
-  cursor: pointer;
-  box-shadow: 0 0 14px rgba(100, 180, 255, 0.22);
-  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
-  width: 100%;
-}
-
-.new-deal-btn:hover {
-  background: rgba(147, 210, 255, 0.18);
-  border-color: rgba(147, 210, 255, 0.5);
-  box-shadow: 0 0 22px rgba(100, 180, 255, 0.35);
-}
 
 .new-deal-from-profile-btn {
   margin-top: 1.25rem;
@@ -1062,9 +1058,9 @@ h2 {
   border-radius: 14px;
   color: #93d2ff;
   font-family: inherit;
-  font-size: 14px;
+  font-size: 0.88rem;
   font-weight: 600;
-  padding: 12px;
+  padding: 0.55rem 1rem;
   cursor: pointer;
   box-shadow: 0 0 14px rgba(100, 180, 255, 0.22);
   transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;

@@ -209,17 +209,23 @@
   function playNotificationSound () {
     try {
       const ctx = new AudioContext()
-      const osc = ctx.createOscillator()
-      const gain = ctx.createGain()
-      osc.connect(gain)
-      gain.connect(ctx.destination)
-      osc.type = 'sine'
-      osc.frequency.setValueAtTime(1047, ctx.currentTime)           // C6
-      osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15) // A5
-      gain.gain.setValueAtTime(0.25, ctx.currentTime)
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.6)
-      osc.start(ctx.currentTime)
-      osc.stop(ctx.currentTime + 0.6)
+      const t = ctx.currentTime
+
+      function tap (startAt: number) {
+        const osc  = ctx.createOscillator()
+        const gain = ctx.createGain()
+        osc.connect(gain)
+        gain.connect(ctx.destination)
+        osc.type = 'sine'
+        osc.frequency.setValueAtTime(880, startAt)
+        gain.gain.setValueAtTime(0.12, startAt)
+        gain.gain.exponentialRampToValueAtTime(0.001, startAt + 0.08)
+        osc.start(startAt)
+        osc.stop(startAt + 0.08)
+      }
+
+      tap(t)
+      tap(t + 0.13)
     } catch {}
   }
 
@@ -709,6 +715,7 @@
     <NewDeal
       counterpartyKey={newDealCounterpartyKey}
       onBack={() => view = previousView}
+      onSuccess={() => view = 'identity'}
     />
 
   {:else if view === 'findUser'}

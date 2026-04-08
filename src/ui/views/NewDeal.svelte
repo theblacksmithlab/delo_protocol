@@ -5,10 +5,12 @@
 
   let {
     counterpartyKey = '',
-    onBack
+    onBack,
+    onSuccess
   } = $props<{
     counterpartyKey?: string
     onBack: () => void
+    onSuccess?: () => void
   }>()
 
   // untrack: we intentionally capture only the initial prop value.
@@ -45,8 +47,17 @@
       const parsed = JSON.parse(trimmed)
       return parsed.publicKey ?? null
     } catch {
-      // Not JSON — treat as raw hex key
       return trimmed.length > 0 ? trimmed : null
+    }
+  }
+
+  // Returns driveKey if input is contact JSON, null if raw hex key
+  function parseCounterpartyDriveKey (input: string): string | null {
+    try {
+      const parsed = JSON.parse(input.trim())
+      return parsed.driveKey ?? null
+    } catch {
+      return null
     }
   }
 
@@ -74,7 +85,8 @@
       const deal = {
         title:             title.trim(),
         initiator_terms:   terms.trim(),
-        counterparty_key:  parseCounterpartyKey(cpKey)!,
+        counterparty_key:       parseCounterpartyKey(cpKey)!,
+        counterparty_drive_key: parseCounterpartyDriveKey(cpKey),
         original_amount:   parseFloat(amount),
         original_currency: currency.toLowerCase(),
         amount_usd:        rates.amount_usd,
@@ -115,7 +127,7 @@
       <div class="success-title">Deal Initiated</div>
       <div class="success-id">{createdId.slice(0, 16)}…</div>
       <div class="success-sub">Waiting for counterparty to respond</div>
-      <button class="submit-btn" onclick={onBack}>Back to Deals</button>
+      <button class="submit-btn" onclick={onSuccess ?? onBack}>Back to Home</button>
     </div>
   {:else}
 
@@ -227,8 +239,19 @@
 
 <style>
   .new-deal-screen {
-    padding: 16px;
+    display: flex;
+    flex-direction: column;
     text-align: left;
+    background: rgba(255, 255, 255, 0.07);
+    backdrop-filter: blur(28px) saturate(180%);
+    -webkit-backdrop-filter: blur(28px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    border-radius: 20px;
+    padding: 1.5rem;
+    box-shadow:
+      0 8px 32px rgba(0, 0, 0, 0.4),
+      inset 0 1px 0 rgba(255, 255, 255, 0.2),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.15);
   }
 
   .screen-header {
@@ -242,19 +265,20 @@
     font-size: 18px;
     font-weight: 600;
     margin: 0;
-    color: #e2e8f0;
+    color: #f0f4f8;
     text-align: left;
   }
 
   .status-badge {
-    background: rgba(147,210,255,0.12);
-    border: 1px solid rgba(147,210,255,0.3);
+    background: rgba(147,210,255,0.1);
+    border: 1px solid rgba(147,210,255,0.4);
     border-radius: 20px;
     color: #93d2ff;
     font-size: 11px;
     font-weight: 600;
     letter-spacing: 0.04em;
     padding: 5px 12px;
+    box-shadow: 0 0 10px rgba(100,180,255,0.3);
   }
 
   .form {
@@ -275,14 +299,14 @@
     font-weight: 600;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: #7a8599;
+    color: #64748b;
   }
 
   .field-input {
     background: rgba(255,255,255,0.05);
     border: 1px solid rgba(255,255,255,0.1);
     border-radius: 8px;
-    color: #e2e8f0;
+    color: #f0f4f8;
     font-family: inherit;
     font-size: 14px;
     padding: 10px 12px;
@@ -305,7 +329,7 @@
     background: rgba(255,255,255,0.03);
     border: 1px solid rgba(255,255,255,0.07);
     border-radius: 8px;
-    color: #e2e8f0;
+    color: #f0f4f8;
     font-size: 13px;
     padding: 10px 12px;
     word-break: break-all;
@@ -313,7 +337,7 @@
   }
 
   .field-readonly-muted {
-    color: #4a5568;
+    color: #64748b;
     font-style: italic;
   }
 
@@ -357,7 +381,7 @@
   .level-btn:hover:not(:disabled) {
     background: rgba(147,210,255,0.07);
     border-color: rgba(147,210,255,0.25);
-    color: #e2e8f0;
+    color: #f0f4f8;
   }
 
   .level-btn.active {
@@ -385,7 +409,7 @@
     background: rgba(255, 80, 80, 0.1);
     border: 1px solid rgba(255, 80, 80, 0.25);
     border-radius: 8px;
-    color: #fc8181;
+    color: #f87171;
     font-size: 13px;
     padding: 10px 12px;
     text-align: left;
@@ -397,9 +421,9 @@
     border-radius: 14px;
     color: #93d2ff;
     font-family: inherit;
-    font-size: 14px;
+    font-size: 0.88rem;
     font-weight: 600;
-    padding: 12px;
+    padding: 0.55rem 1rem;
     cursor: pointer;
     box-shadow: 0 0 14px rgba(100, 180, 255, 0.22);
     transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
@@ -421,7 +445,7 @@
   .back-btn {
     background: none;
     border: none;
-    color: #7a8599;
+    color: #64748b;
     font-family: inherit;
     font-size: 13px;
     cursor: pointer;
@@ -431,7 +455,7 @@
   }
 
   .back-btn:hover {
-    color: #e2e8f0;
+    color: #f0f4f8;
   }
 
   .success-screen {
@@ -459,17 +483,17 @@
   .success-title {
     font-size: 18px;
     font-weight: 600;
-    color: #e2e8f0;
+    color: #f0f4f8;
   }
 
   .success-sub {
     font-size: 13px;
-    color: #7a8599;
+    color: #94a3b8;
   }
 
   .success-id {
     font-size: 11px;
-    color: #4a5568;
+    color: #64748b;
     font-family: monospace;
   }
 </style>
