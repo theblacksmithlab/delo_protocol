@@ -17,6 +17,8 @@
     expires_at: number
     initiator_terms: string
     counterparty_terms: string | null
+    initiator_outcome: string | null   // how initiator rated the counterparty
+    counterparty_outcome: string | null // how counterparty rated the initiator
     delivered: boolean
   }
 
@@ -38,6 +40,18 @@
   let confirming    = $state(false)
   let confirmError  = $state<string | null>(null)
 
+  // Close flow state
+  let showClosePanel  = $state(false)
+  let selectedOutcome = $state<'positive' | 'neutral' | 'negative' | null>(null)
+  let closing         = $state(false)
+  let closeError      = $state<string | null>(null)
+
+  const OUTCOMES: { value: 'positive' | 'neutral' | 'negative'; label: string; desc: string }[] = [
+    { value: 'positive', label: '👍 Positive', desc: 'Fulfilled as agreed' },
+    { value: 'neutral',  label: '😐 Neutral',  desc: 'Partially fulfilled' },
+    { value: 'negative', label: '👎 Negative', desc: 'Did not fulfill' },
+  ]
+
   $effect(() => {
     const tick = setInterval(() => { now = Math.floor(Date.now() / 1000) }, 60_000)
     return () => clearInterval(tick)
@@ -51,6 +65,26 @@
     deal.status === 'pending_counterparty' ||
     deal.status === 'pending_initiator'
   )
+
+  // True when the deal is executing — we can close our side.
+  const isInProgress = $derived(deal.status === 'in_progress')
+
+  // True when the other party has already closed their side — it's our turn.
+  const otherPartyClosed = $derived(
+    (isInitiator  && deal.status === 'closed_by_counterparty') ||
+    (!isInitiator && deal.status === 'closed_by_initiator')
+  )
+
+  // True when WE have closed our side but are waiting for the other party.
+  const weWaitingForOther = $derived(
+    (isInitiator  && deal.status === 'closed_by_initiator') ||
+    (!isInitiator && deal.status === 'closed_by_counterparty')
+  )
+
+  // Show close panel when other party has already closed (skip the "initiate close" step).
+  $effect(() => {
+    if (otherPartyClosed) showClosePanel = true
+  })
 
   function shortKey (hex: string): string {
     return '0x' + hex.slice(0, 6) + '...' + hex.slice(-6)
@@ -93,15 +127,17 @@
 
   function statusLabel (status: string): string {
     switch (status) {
-      case 'initiated':                return 'Delivering'
-      case 'pending_counterparty':     return isInitiator ? 'Awaiting response' : 'Action required'
-      case 'pending_initiator':        return isInitiator ? 'Action required'   : 'Awaiting response'
-      case 'in_progress':             return 'In progress'
-      case 'completed':               return 'Completed'
-      case 'cancelled_by_initiator':  return isInitiator ? 'Cancelled by you'  : 'Cancelled by initiator'
+      case 'initiated':                  return 'Delivering'
+      case 'pending_counterparty':       return isInitiator ? 'Awaiting response' : 'Action required'
+      case 'pending_initiator':          return isInitiator ? 'Action required'   : 'Awaiting response'
+      case 'in_progress':               return 'In progress'
+      case 'closed_by_initiator':       return isInitiator ? 'Waiting for counterparty' : 'Action required'
+      case 'closed_by_counterparty':    return isInitiator ? 'Action required' : 'Waiting for initiator'
+      case 'completed':                 return 'Completed'
+      case 'cancelled_by_initiator':    return isInitiator ? 'Cancelled by you'  : 'Cancelled by initiator'
       case 'cancelled_by_counterparty': return isInitiator ? 'Cancelled by counterparty' : 'Cancelled by you'
-      case 'expired':                 return 'Not concluded'
-      default:                        return status
+      case 'expired':                   return 'Not concluded'
+      default:                          return status
     }
   }
 
@@ -145,6 +181,32 @@
       confirmError = e instanceof Error ? e.message : 'Unknown error'
     } finally {
       confirming = false
+    }
+  }
+
+  async function closeDeal () {
+    if (!selectedOutcome) return
+    closing = true
+    closeError = null
+    try {
+      const res = await fetch('/api/close-deal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id:      deal.id,
+          role:    isInitiator ? 'initiator' : 'counterparty',
+          outcome: selectedOutcome,
+        })
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.error || 'Failed to close deal')
+      }
+      onBack()
+    } catch (e) {
+      closeError = e instanceof Error ? e.message : 'Unknown error'
+    } finally {
+      closing = false
     }
   }
 
@@ -240,6 +302,30 @@
       {/if}
     </div>
 
+    <!-- Outcomes — shown on completed deals -->
+    {#if deal.status === 'completed'}
+      <div class="field">
+        <div class="field-label">Your rating</div>
+        <div class="field-value outcome-display outcome-{isInitiator ? (deal.initiator_outcome ?? 'none') : (deal.counterparty_outcome ?? 'none')}">
+          {#if isInitiator}
+            {deal.initiator_outcome ?? '—'}
+          {:else}
+            {deal.counterparty_outcome ?? '—'}
+          {/if}
+        </div>
+      </div>
+      <div class="field">
+        <div class="field-label">Their rating of you</div>
+        <div class="field-value outcome-display outcome-{isInitiator ? (deal.counterparty_outcome ?? 'none') : (deal.initiator_outcome ?? 'none')}">
+          {#if isInitiator}
+            {deal.counterparty_outcome ?? '—'}
+          {:else}
+            {deal.initiator_outcome ?? '—'}
+          {/if}
+        </div>
+      </div>
+    {/if}
+
   </div>
 
   <!-- Counterparty approve UI — shown when counterparty views a pending_counterparty incoming deal -->
@@ -307,6 +393,70 @@
           </button>
         </div>
       {/if}
+    </div>
+  {/if}
+
+  <!-- Close Deal — shown for in_progress and partially-closed deals -->
+  {#if isInProgress || otherPartyClosed || weWaitingForOther}
+    <div class="close-wrap">
+
+      {#if weWaitingForOther}
+        <!-- We closed, waiting for the other party -->
+        <div class="close-waiting">
+          <span class="close-waiting-icon">⏳</span>
+          <span>Waiting for the other party to close their side</span>
+        </div>
+
+      {:else if !showClosePanel}
+        <!-- Initial trigger button -->
+        <button class="close-deal-btn" onclick={() => { showClosePanel = true }}>
+          Close Deal
+        </button>
+
+      {:else}
+        <!-- Outcome selector + confirm -->
+        {#if otherPartyClosed}
+          <div class="close-hint">
+            The other party has declared their obligations fulfilled. Rate their performance and close your side.
+          </div>
+        {/if}
+
+        <div class="field-label" style="margin-bottom: 6px;">How did they perform?</div>
+        <div class="outcome-row">
+          {#each OUTCOMES as opt}
+            <button
+              class="outcome-btn"
+              class:active={selectedOutcome === opt.value}
+              onclick={() => { selectedOutcome = opt.value }}
+            >
+              <span class="outcome-emoji">{opt.label}</span>
+              <span class="outcome-desc">{opt.desc}</span>
+            </button>
+          {/each}
+        </div>
+
+        {#if closeError}
+          <div class="action-error">{closeError}</div>
+        {/if}
+
+        <div class="close-actions">
+          <button
+            class="keep-deal-btn"
+            onclick={() => { showClosePanel = false; selectedOutcome = null }}
+            disabled={closing}
+          >
+            Back
+          </button>
+          <button
+            class="confirm-close-btn"
+            onclick={closeDeal}
+            disabled={closing || !selectedOutcome}
+          >
+            {closing ? 'Closing...' : 'Confirm Close'}
+          </button>
+        </div>
+      {/if}
+
     </div>
   {/if}
 
@@ -620,4 +770,139 @@
     border-radius: 6px;
     padding: 8px 10px;
   }
+
+  /* ─── Close Deal section ─────────────────────────────────── */
+
+  .close-wrap {
+    margin-top: 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  /* Tier 3 ghost teal — initial "Close Deal" trigger */
+  .close-deal-btn {
+    width: 100%;
+    background: transparent;
+    border: 1px solid rgba(52, 211, 153, 0.3);
+    border-radius: 7px;
+    color: #34d399;
+    font-family: inherit;
+    font-size: 0.875rem;
+    font-weight: 600;
+    padding: 0.5rem 1.1rem;
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .close-deal-btn:hover {
+    border-color: rgba(52, 211, 153, 0.55);
+    color: #6ee7b7;
+  }
+
+  /* Hint text when other party has already closed */
+  .close-hint {
+    font-size: 12px;
+    color: #94a3b8;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 8px;
+    padding: 10px 12px;
+    line-height: 1.5;
+  }
+
+  /* Three outcome buttons side by side */
+  .outcome-row {
+    display: flex;
+    gap: 8px;
+  }
+
+  .outcome-btn {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    padding: 10px 6px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 8px;
+    color: #94a3b8;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .outcome-btn:hover {
+    background: rgba(255,255,255,0.07);
+    border-color: rgba(255,255,255,0.2);
+    color: #f0f4f8;
+  }
+  .outcome-btn.active {
+    background: rgba(52, 211, 153, 0.1);
+    border-color: rgba(52, 211, 153, 0.35);
+    color: #34d399;
+  }
+
+  .outcome-emoji {
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .outcome-desc {
+    font-size: 10px;
+    opacity: 0.7;
+    text-align: center;
+  }
+
+  /* Bottom close action row: Back + Confirm Close */
+  .close-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 2px;
+  }
+
+  /* Tier 1 glow teal — "Confirm Close" */
+  .confirm-close-btn {
+    flex: 1;
+    background: rgba(52, 211, 153, 0.1);
+    border: 1px solid rgba(52, 211, 153, 0.3);
+    border-radius: 14px;
+    color: #34d399;
+    font-family: inherit;
+    font-size: 0.88rem;
+    font-weight: 600;
+    padding: 0.55rem 1rem;
+    cursor: pointer;
+    box-shadow: 0 0 14px rgba(52, 211, 153, 0.18);
+    transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+  }
+  .confirm-close-btn:hover {
+    background: rgba(52, 211, 153, 0.18);
+    border-color: rgba(52, 211, 153, 0.5);
+    box-shadow: 0 0 22px rgba(52, 211, 153, 0.3);
+  }
+  .confirm-close-btn:disabled { opacity: 0.4; box-shadow: none; pointer-events: none; }
+
+  /* Waiting state */
+  .close-waiting {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: #64748b;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 8px;
+    padding: 10px 12px;
+  }
+  .close-waiting-icon { font-size: 14px; }
+
+  /* Completed deal outcomes display */
+  .outcome-display {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: capitalize;
+  }
+  .outcome-positive { color: #34d399; }
+  .outcome-neutral  { color: #94a3b8; }
+  .outcome-negative { color: #f87171; }
+  .outcome-none     { color: #64748b; }
 </style>

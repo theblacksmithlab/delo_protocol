@@ -64,6 +64,7 @@
   function validate (): string | null {
     if (!title.trim())                return 'Deal title is required'
     if (!parseCounterpartyKey(cpKey)) return 'Counterparty key is required'
+    if (!parseCounterpartyDriveKey(cpKey)) return 'Use the full contact key (copy via the share button on their profile)'
     if (!terms.trim())                return 'Your terms are required'
     const amt = parseFloat(amount)
     if (!amount || isNaN(amt) || amt <= 0) return 'Enter a valid amount'

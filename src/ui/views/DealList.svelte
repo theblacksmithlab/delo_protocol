@@ -13,10 +13,11 @@
     delivered: boolean
   }
 
-  let { myPublicKey, onNewDeal, onViewDeal } = $props<{
+  let { myPublicKey, onNewDeal, onViewDeal, refreshKey = 0 } = $props<{
     myPublicKey: string
     onNewDeal: () => void
     onViewDeal: (deal: Deal) => void
+    refreshKey?: number
   }>()
 
   let deals   = $state<Deal[]>([])
@@ -36,11 +37,15 @@
   }
 
   $effect(() => {
-    loadDeals()
     const refresh = setInterval(loadDeals, 30_000)
-    // Minute-level tick is enough — timer shows Xh Ym, no seconds
     const tick = setInterval(() => { now = Math.floor(Date.now() / 1000) }, 60_000)
     return () => { clearInterval(refresh); clearInterval(tick) }
+  })
+
+  // Load on mount and whenever parent signals a refresh (e.g. on notification)
+  $effect(() => {
+    void refreshKey
+    loadDeals()
   })
 
   function isOutgoing (deal: Deal): boolean {
@@ -79,15 +84,17 @@
   function statusLabel (deal: Deal): string {
     const out = isOutgoing(deal)
     switch (deal.status) {
-      case 'initiated':                return 'Delivering'
-      case 'pending_counterparty':     return out ? 'Awaiting response' : 'Action required'
-      case 'pending_initiator':        return out ? 'Action required'   : 'Awaiting response'
-      case 'in_progress':              return 'In progress'
-      case 'completed':                return 'Completed'
-      case 'cancelled_by_initiator':   return out ? 'Cancelled by you'  : 'Cancelled by initiator'
-      case 'cancelled_by_counterparty':return out ? 'Cancelled by counterparty' : 'Cancelled by you'
-      case 'expired':                  return 'Not concluded'
-      default:                         return deal.status
+      case 'initiated':                  return 'Delivering'
+      case 'pending_counterparty':       return out ? 'Awaiting response' : 'Action required'
+      case 'pending_initiator':          return out ? 'Action required'   : 'Awaiting response'
+      case 'in_progress':                return 'In progress'
+      case 'closed_by_initiator':        return out ? 'Waiting for counterparty' : 'Action required'
+      case 'closed_by_counterparty':     return out ? 'Action required' : 'Waiting for initiator'
+      case 'completed':                  return 'Completed'
+      case 'cancelled_by_initiator':     return out ? 'Cancelled by you'  : 'Cancelled by initiator'
+      case 'cancelled_by_counterparty':  return out ? 'Cancelled by counterparty' : 'Cancelled by you'
+      case 'expired':                    return 'Not concluded'
+      default:                           return deal.status
     }
   }
 
@@ -122,7 +129,11 @@
       {#each deals as deal (deal.id)}
         <div
           class="deal-card"
-          class:action-required={deal.status === 'pending_initiator'}
+          class:action-required={
+            deal.status === 'pending_initiator' ||
+            (deal.status === 'closed_by_initiator' && !isOutgoing(deal)) ||
+            (deal.status === 'closed_by_counterparty' && isOutgoing(deal))
+          }
           class:sending={deal.status === 'initiated' && !deal.delivered}
           class:closed={isClosedDeal(deal.status)}
           role="button"

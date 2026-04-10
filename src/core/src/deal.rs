@@ -45,7 +45,9 @@ pub enum DealStatus {
     PendingCounterparty,     // delivered, counterparty must fill their terms and respond
     PendingInitiator,        // counterparty responded, initiator must review and confirm
     InProgress,              // both parties confirmed, deal is executing
-    Completed,               // deal closed, outcome recorded
+    ClosedByInitiator,       // initiator declared their obligations fulfilled, awaiting counterparty
+    ClosedByCounterparty,    // counterparty declared their obligations fulfilled, awaiting initiator
+    Completed,               // both parties closed — deal fully recorded with outcomes
     CancelledByInitiator,    // initiator cancelled before in_progress
     CancelledByCounterparty, // counterparty cancelled before in_progress
     Expired,                 // 24h window passed without reaching in_progress
@@ -84,7 +86,11 @@ pub struct Deal {
     pub title: String,           // short human-readable name, e.g. "BMW wheels"
     pub level: DealLevel,
     pub status: DealStatus,
-    pub outcome: Option<Outcome>, // None until status == Completed
+
+    // Each party independently declares their own fulfillment and rates the other side.
+    // Set when that party calls /api/close-deal. None until they do.
+    pub initiator_outcome: Option<Outcome>,    // how initiator rates the counterparty's performance
+    pub counterparty_outcome: Option<Outcome>, // how counterparty rates the initiator's performance
 
     // Terms — what each party commits to do
     pub initiator_terms: String,             // filled at deal creation
@@ -110,22 +116,40 @@ impl Deal {
         now > self.expires_at
     }
 
-    /// Returns the weighted contribution of this deal to the reputation score.
-    /// Only meaningful when status == Completed.
+    /// Returns the weighted contribution of this deal to `subject`'s reputation score.
+    ///
+    /// `subject` is whose reputation we're computing — "initiator" or "counterparty".
+    /// The *other* party's outcome field rates `subject`'s performance:
+    ///   - initiator's reputation ← counterparty_outcome (how counterparty rated the initiator)
+    ///   - counterparty's reputation ← initiator_outcome (how initiator rated the counterparty)
+    ///
+    /// Only meaningful when status == Completed. Returns 0.0 for any other status.
+    ///
     /// Positive: +amount * coefficient
     /// Neutral:  0
     /// Negative: -amount * coefficient * 1.5
-    pub fn weighted_contribution(&self, currency: &Currency) -> f64 {
-        let outcome = match &self.outcome {
+    pub fn weighted_contribution(&self, subject: &str, currency: &Currency) -> f64 {
+        if self.status != DealStatus::Completed {
+            return 0.0;
+        }
+
+        // The counterparty rates the initiator, and vice versa.
+        let outcome = match subject {
+            "initiator"    => self.counterparty_outcome.as_ref(),
+            "counterparty" => self.initiator_outcome.as_ref(),
+            _              => return 0.0,
+        };
+
+        let outcome = match outcome {
             Some(o) => o,
             None => return 0.0,
         };
 
         let amount = match currency {
-            Currency::Usd => self.amount_usd,
-            Currency::Rub => self.amount_rub,
-            Currency::Btc => self.amount_btc,
-            Currency::Eur => self.amount_eur,
+            Currency::Usd  => self.amount_usd,
+            Currency::Rub  => self.amount_rub,
+            Currency::Btc  => self.amount_btc,
+            Currency::Eur  => self.amount_eur,
             Currency::Usdt => self.amount_usdt,
         };
 
@@ -133,7 +157,7 @@ impl Deal {
 
         match outcome {
             Outcome::Positive => amount * coeff,
-            Outcome::Neutral => 0.0,
+            Outcome::Neutral  => 0.0,
             Outcome::Negative => -(amount * coeff * 1.5),
         }
     }
@@ -166,8 +190,15 @@ mod tests {
     use super::*;
 
     // Builds a minimal Deal with sensible defaults for testing.
-    // Fields not relevant to a specific test are set to zero/None.
-    fn make_deal(level: DealLevel, outcome: Option<Outcome>, amount: f64) -> Deal {
+    // `initiator_outcome` = how the initiator rated the counterparty's performance.
+    // `counterparty_outcome` = how the counterparty rated the initiator's performance.
+    // Both are None until each party calls close-deal.
+    fn make_deal(
+        level: DealLevel,
+        initiator_outcome: Option<Outcome>,
+        counterparty_outcome: Option<Outcome>,
+        amount: f64,
+    ) -> Deal {
         Deal {
             id: [1u8; 32],
             initiator_key: [2u8; 32],
@@ -184,7 +215,8 @@ mod tests {
             title: "Test deal".to_string(),
             level,
             status: DealStatus::Completed,
-            outcome,
+            initiator_outcome,
+            counterparty_outcome,
             initiator_terms: "Deliver 10 units by Friday".to_string(),
             counterparty_terms: Some("Pay $100 on delivery".to_string()),
             review_text: None,
@@ -200,70 +232,102 @@ mod tests {
 
     #[test]
     fn not_expired_before_deadline() {
-        let deal = make_deal(DealLevel::Handshake, None, 100.0);
-        assert!(!deal.is_expired(1_000_001)); // one second after creation, still valid
+        let deal = make_deal(DealLevel::Handshake, None, None, 100.0);
+        assert!(!deal.is_expired(1_000_001));
     }
 
     #[test]
     fn expired_after_deadline() {
-        let deal = make_deal(DealLevel::Handshake, None, 100.0);
-        assert!(deal.is_expired(1_086_401)); // one second past expires_at
+        let deal = make_deal(DealLevel::Handshake, None, None, 100.0);
+        assert!(deal.is_expired(1_086_401));
     }
 
     #[test]
     fn not_expired_exactly_at_deadline() {
-        let deal = make_deal(DealLevel::Handshake, None, 100.0);
+        let deal = make_deal(DealLevel::Handshake, None, None, 100.0);
         // expires_at = 1_086_400, now = 1_086_400 → not expired (strictly greater)
         assert!(!deal.is_expired(1_086_400));
     }
 
     // --- weighted_contribution ---
+    //
+    // Convention: initiator_outcome = how initiator rated the counterparty's work.
+    //             counterparty_outcome = how counterparty rated the initiator's work.
+    // So counterparty's reputation ← initiator_outcome, and vice versa.
 
     #[test]
-    fn positive_handshake_contribution() {
-        let deal = make_deal(DealLevel::Handshake, Some(Outcome::Positive), 100.0);
+    fn positive_handshake_contribution_for_counterparty() {
+        // initiator rates counterparty as Positive → counterparty gets +40
+        let deal = make_deal(DealLevel::Handshake, Some(Outcome::Positive), None, 100.0);
         // 100 * 0.4 = 40.0
-        assert!((deal.weighted_contribution(&Currency::Usd) - 40.0).abs() < f64::EPSILON);
+        assert!((deal.weighted_contribution("counterparty", &Currency::Usd) - 40.0).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn positive_review_contribution() {
-        let deal = make_deal(DealLevel::Review, Some(Outcome::Positive), 100.0);
+    fn positive_review_contribution_for_initiator() {
+        // counterparty rates initiator as Positive → initiator gets +70
+        let deal = make_deal(DealLevel::Review, None, Some(Outcome::Positive), 100.0);
         // 100 * 0.7 = 70.0
-        assert!((deal.weighted_contribution(&Currency::Usd) - 70.0).abs() < f64::EPSILON);
+        assert!((deal.weighted_contribution("initiator", &Currency::Usd) - 70.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn neutral_contributes_zero() {
-        let deal = make_deal(DealLevel::Handshake, Some(Outcome::Neutral), 100.0);
-        assert_eq!(deal.weighted_contribution(&Currency::Usd), 0.0);
+        let deal = make_deal(DealLevel::Handshake, Some(Outcome::Neutral), None, 100.0);
+        assert_eq!(deal.weighted_contribution("counterparty", &Currency::Usd), 0.0);
     }
 
     #[test]
     fn negative_applies_penalty_multiplier() {
-        let deal = make_deal(DealLevel::Handshake, Some(Outcome::Negative), 100.0);
+        // initiator rates counterparty as Negative → counterparty gets -60
+        let deal = make_deal(DealLevel::Handshake, Some(Outcome::Negative), None, 100.0);
         // -(100 * 0.4 * 1.5) = -60.0
-        assert!((deal.weighted_contribution(&Currency::Usd) - (-60.0)).abs() < f64::EPSILON);
+        assert!((deal.weighted_contribution("counterparty", &Currency::Usd) - (-60.0)).abs() < f64::EPSILON);
     }
 
     #[test]
     fn no_outcome_contributes_zero() {
-        let deal = make_deal(DealLevel::Handshake, None, 100.0);
-        assert_eq!(deal.weighted_contribution(&Currency::Usd), 0.0);
+        // neither party has rated yet
+        let deal = make_deal(DealLevel::Handshake, None, None, 100.0);
+        assert_eq!(deal.weighted_contribution("initiator", &Currency::Usd), 0.0);
+        assert_eq!(deal.weighted_contribution("counterparty", &Currency::Usd), 0.0);
+    }
+
+    #[test]
+    fn non_completed_status_contributes_zero() {
+        // in_progress deal should not count towards reputation yet
+        let mut deal = make_deal(DealLevel::Handshake, Some(Outcome::Positive), Some(Outcome::Positive), 100.0);
+        deal.status = DealStatus::InProgress;
+        assert_eq!(deal.weighted_contribution("initiator", &Currency::Usd), 0.0);
+        assert_eq!(deal.weighted_contribution("counterparty", &Currency::Usd), 0.0);
     }
 
     #[test]
     fn contribution_uses_correct_currency_column() {
-        let deal = make_deal(DealLevel::Handshake, Some(Outcome::Positive), 100.0);
+        // initiator rates counterparty Positive in RUB equivalent
+        let deal = make_deal(DealLevel::Handshake, Some(Outcome::Positive), None, 100.0);
         // amount_rub = 100 * 90 = 9000, contribution = 9000 * 0.4 = 3600
-        assert!((deal.weighted_contribution(&Currency::Rub) - 3600.0).abs() < f64::EPSILON);
+        assert!((deal.weighted_contribution("counterparty", &Currency::Rub) - 3600.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn both_parties_can_have_different_outcomes() {
+        // initiator rates counterparty Positive, counterparty rates initiator Negative
+        let deal = make_deal(
+            DealLevel::Handshake,
+            Some(Outcome::Positive),  // counterparty gets +40
+            Some(Outcome::Negative),  // initiator gets -60
+            100.0,
+        );
+        assert!((deal.weighted_contribution("counterparty", &Currency::Usd) - 40.0).abs() < f64::EPSILON);
+        assert!((deal.weighted_contribution("initiator", &Currency::Usd) - (-60.0)).abs() < f64::EPSILON);
     }
 
     // --- serde round-trip ---
 
     #[test]
     fn serde_round_trip_no_signatures() {
-        let original = make_deal(DealLevel::Review, Some(Outcome::Positive), 250.0);
+        let original = make_deal(DealLevel::Review, Some(Outcome::Positive), Some(Outcome::Positive), 250.0);
         let json = serde_json::to_string(&original).expect("serialization failed");
         let restored: Deal = serde_json::from_str(&json).expect("deserialization failed");
 
@@ -272,14 +336,15 @@ mod tests {
         assert_eq!(restored.counterparty_key, original.counterparty_key);
         assert_eq!(restored.amount_usd, original.amount_usd);
         assert_eq!(restored.level, original.level);
-        assert_eq!(restored.outcome, original.outcome);
+        assert_eq!(restored.initiator_outcome, original.initiator_outcome);
+        assert_eq!(restored.counterparty_outcome, original.counterparty_outcome);
         assert_eq!(restored.initiator_sig, None);
         assert_eq!(restored.counterparty_sig, None);
     }
 
     #[test]
     fn serde_round_trip_with_signatures() {
-        let mut deal = make_deal(DealLevel::Handshake, Some(Outcome::Positive), 50.0);
+        let mut deal = make_deal(DealLevel::Handshake, Some(Outcome::Positive), None, 50.0);
         deal.initiator_sig = Some([0xABu8; 64]);
         deal.counterparty_sig = Some([0xCDu8; 64]);
 
@@ -292,7 +357,7 @@ mod tests {
 
     #[test]
     fn hex_keys_appear_in_json() {
-        let deal = make_deal(DealLevel::Handshake, None, 10.0);
+        let deal = make_deal(DealLevel::Handshake, None, None, 10.0);
         let json = serde_json::to_string(&deal).expect("serialization failed");
         // id = [1u8; 32] → 64 hex chars of "01"
         assert!(json.contains("0101010101010101010101010101010101010101010101010101010101010101"));
@@ -300,7 +365,7 @@ mod tests {
 
     #[test]
     fn enum_variants_serialized_as_lowercase() {
-        let deal = make_deal(DealLevel::Review, Some(Outcome::Negative), 10.0);
+        let deal = make_deal(DealLevel::Review, Some(Outcome::Negative), None, 10.0);
         let json = serde_json::to_string(&deal).expect("serialization failed");
         assert!(json.contains("\"review\""));
         assert!(json.contains("\"negative\""));
@@ -309,15 +374,28 @@ mod tests {
 
     #[test]
     fn pending_initiator_serializes_as_snake_case() {
-        let mut deal = make_deal(DealLevel::Handshake, None, 50.0);
+        let mut deal = make_deal(DealLevel::Handshake, None, None, 50.0);
         deal.status = DealStatus::PendingInitiator;
         let json = serde_json::to_string(&deal).expect("serialization failed");
         assert!(json.contains("\"pending_initiator\""));
     }
 
     #[test]
+    fn closed_statuses_serialize_correctly() {
+        let mut deal = make_deal(DealLevel::Handshake, None, None, 50.0);
+
+        deal.status = DealStatus::ClosedByInitiator;
+        let json = serde_json::to_string(&deal).unwrap();
+        assert!(json.contains("\"closed_by_initiator\""));
+
+        deal.status = DealStatus::ClosedByCounterparty;
+        let json = serde_json::to_string(&deal).unwrap();
+        assert!(json.contains("\"closed_by_counterparty\""));
+    }
+
+    #[test]
     fn cancelled_and_expired_statuses_serialize_correctly() {
-        let mut deal = make_deal(DealLevel::Handshake, None, 50.0);
+        let mut deal = make_deal(DealLevel::Handshake, None, None, 50.0);
 
         deal.status = DealStatus::CancelledByInitiator;
         let json = serde_json::to_string(&deal).unwrap();

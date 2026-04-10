@@ -123,6 +123,7 @@
 
   // DealView navigation state
   let currentDeal = $state<any>(null)
+  let dealListRefreshKey = $state(0)
 
   function openDealView (deal: any) {
     currentDeal = deal
@@ -234,9 +235,19 @@
       const res = await fetch('/api/get-notifications')
       if (!res.ok) return
       const notifications = await res.json()
-      if (notifications.length > 0) {
-        hasNotification = true
-        playNotificationSound()
+      if (notifications.length === 0) return
+
+      hasNotification = true
+      playNotificationSound()
+      dealListRefreshKey++
+
+      // If DealView is open, refresh the deal data immediately
+      if (view === 'dealView' && currentDeal) {
+        const r = await fetch(`/api/get-deal?id=${currentDeal.id}`)
+        if (r.ok) {
+          const fresh = await r.json()
+          if (!fresh.error) currentDeal = fresh
+        }
       }
     } catch {}
   }
@@ -578,6 +589,7 @@
                 myPublicKey={publicKey ?? ''}
                 onNewDeal={() => openNewDeal('identity')}
                 onViewDeal={openDealView}
+                refreshKey={dealListRefreshKey}
               />
             </div>
           {/if}
@@ -696,7 +708,7 @@
 
       <button
         class="new-deal-from-profile-btn"
-        onclick={() => openNewDeal('peerProfile', peerPublicKey ?? '')}
+        onclick={() => openNewDeal('peerProfile', peerPublicKey && peerFoundDriveKey ? JSON.stringify({ publicKey: peerPublicKey, driveKey: peerFoundDriveKey }) : (peerPublicKey ?? ''))}
         disabled={!peerPublicKey}
       >
         + New Deal with {peerProfile?.name || peerShortKey || 'this user'}

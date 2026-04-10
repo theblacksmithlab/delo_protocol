@@ -227,43 +227,13 @@ function handleIncomingMessage (socket) {
     console.log('[recv ←]', msg.type, 'dealId:', msg.dealId?.slice(0, 8))
     let response = { type: 'error', reason: 'unknown message type' }
 
-    if (msg.type === 'deal_request') {
+    // Socket carries only the initial ping — counterparty connects to our drive and reads the deal.
+    if (msg.type === 'deal_announce') {
       try {
         await handleIncomingDeal(msg)
         response = { type: 'deal_ack', dealId: msg.dealId }
       } catch (e) {
         console.error('[handleIncomingDeal] error:', String(e))
-        response = { type: 'error', reason: String(e) }
-      }
-    }
-
-    if (msg.type === 'deal_cancelled') {
-      try {
-        await handleIncomingCancellation(msg)
-        response = { type: 'deal_ack', dealId: msg.dealId }
-      } catch (e) {
-        response = { type: 'error', reason: String(e) }
-      }
-    }
-
-    // Counterparty approved the deal and sent their terms back to us (initiator).
-    // Update our local /pending/deals/ copy: set counterparty_terms + status pending_initiator.
-    if (msg.type === 'deal_response') {
-      try {
-        await handleDealResponse(msg)
-        response = { type: 'deal_ack', dealId: msg.dealId }
-      } catch (e) {
-        response = { type: 'error', reason: String(e) }
-      }
-    }
-
-    // Initiator confirmed the deal after reviewing counterparty terms.
-    // Update our local /incoming/deals/ copy: set status in_progress.
-    if (msg.type === 'deal_confirmed') {
-      try {
-        await handleDealConfirmed(msg)
-        response = { type: 'deal_ack', dealId: msg.dealId }
-      } catch (e) {
         response = { type: 'error', reason: String(e) }
       }
     }
@@ -275,24 +245,35 @@ function handleIncomingMessage (socket) {
   socket.on('error', () => {})
 }
 
-// Called when we receive a deal_request message.
-// Fetches the deal JSON from the sender's Hyperdrive and saves it to our own
-// /incoming/deals/<id>.json so the WebView can poll it later.
-async function handleIncomingDeal ({ dealId, deal, senderDriveKey }) {
+// Called when we receive a deal_announce ping via socket.
+// Connects to the sender's drive, reads the deal from their outbox,
+// and saves it to our /incoming/deals/<id>.json.
+async function handleIncomingDeal ({ dealId, senderDriveKey }) {
   if (!drive) return
 
   // Idempotent: skip if we already have this deal
   const existing = await drive.get(`/incoming/deals/${dealId}.json`)
   if (existing) return
 
-  if (!deal) throw new Error('deal_request missing deal payload')
+  if (!senderDriveKey) throw new Error('deal_announce missing senderDriveKey')
 
+  // Connect to sender's drive and sync it — also sets up persistent outbox watching
+  await connectToPeerDriveForDeals(senderDriveKey)
+
+  // Read the deal from sender's outbox (written before the ping was sent)
+  const peerDrive = peerDrives.get(senderDriveKey)
+  if (!peerDrive) throw new Error('failed to open sender drive')
+
+  const buf = await peerDrive.get(`/outbox/${dealId}.json`).catch(() => null)
+  if (!buf) throw new Error('deal not found in sender outbox')
+
+  const deal = JSON.parse(b4a.toString(buf))
   deal.status = 'pending_counterparty'
-  if (senderDriveKey) deal.initiator_drive_key = senderDriveKey
+  deal.initiator_drive_key = senderDriveKey
+
   await drive.put(`/incoming/deals/${dealId}.json`, b4a.from(JSON.stringify(deal)))
   pushNotification({ type: 'new_deal', dealId, title: deal.title ?? 'New deal' })
-  // Connect to initiator's drive so we can receive their future messages (deal_confirmed etc.)
-  if (senderDriveKey) connectToPeerDriveForDeals(senderDriveKey).catch(() => {})
+  // Drive connection already established above — no second call needed
 }
 
 // Called when the other party cancelled the deal.
@@ -346,12 +327,62 @@ async function handleDealConfirmed ({ dealId }) {
   pushNotification({ type: 'deal_confirmed', dealId, title: deal.title ?? 'Deal' })
 }
 
-// Attempt to deliver a deal_request message to a counterparty.
-// Opens a short-lived client connection to their msg topic, sends the message,
-// waits for ACK. Throws if peer is unreachable or doesn't ACK.
-// Send any message to a peer by their public key.
+// Called when we receive deal_closed from the other party.
+// They have declared their obligations fulfilled and recorded their outcome rating for us.
+// Logic:
+//   - If this is the FIRST close (our copy is still in_progress): update status to
+//     closed_by_<role>, store their outcome field, send notification.
+//   - If this is the SECOND close (our copy is already closed_by_<our_role>): both
+//     parties have closed — move to completed, clear both outbox entries.
+async function handleDealClosed ({ dealId, closedBy, outcome }) {
+  if (!drive) return
+
+  const folders = ['/pending/deals', '/incoming/deals']
+  let folder = null
+  let deal = null
+
+  for (const f of folders) {
+    const buf = await drive.get(`${f}/${dealId}.json`).catch(() => null)
+    if (buf) { folder = f; deal = JSON.parse(b4a.toString(buf)); break }
+  }
+  if (!deal) return // already in history or unknown
+
+  // Store the other party's outcome rating for us.
+  // closedBy tells us who sent this message; their outcome field rates the *other* party.
+  if (closedBy === 'initiator') {
+    if (deal.initiator_outcome !== undefined && deal.initiator_outcome !== null) return // idempotent
+    deal.initiator_outcome = outcome
+  } else {
+    if (deal.counterparty_outcome !== undefined && deal.counterparty_outcome !== null) return // idempotent
+    deal.counterparty_outcome = outcome
+  }
+
+  // Determine what our own close status is (if we've already closed our side).
+  const kp = loadKeypair()
+  const myKey = kp ? b4a.toString(kp.publicKey, 'hex') : null
+  const weAreInitiator = myKey && deal.initiator_key === myKey
+  const ourCloseStatus = weAreInitiator ? 'closed_by_initiator' : 'closed_by_counterparty'
+  const weHaveAlreadyClosed = deal.status === ourCloseStatus
+
+  if (weHaveAlreadyClosed) {
+    // Both parties have now declared — move to completed.
+    deal.status = 'completed'
+    await drive.put(`/history/deals/${dealId}.json`, b4a.from(JSON.stringify(deal)))
+    await drive.del(`${folder}/${dealId}.json`).catch(() => {})
+    await clearOutbox(dealId) // remove our own deal_closed from outbox
+    pushNotification({ type: 'deal_completed', dealId, title: deal.title ?? 'Deal' })
+  } else {
+    // First close received — update status to show which party has closed.
+    deal.status = closedBy === 'initiator' ? 'closed_by_initiator' : 'closed_by_counterparty'
+    await drive.put(`${folder}/${dealId}.json`, b4a.from(JSON.stringify(deal)))
+    pushNotification({ type: 'deal_closed_partial', dealId, title: deal.title ?? 'Deal' })
+  }
+}
+
+// Send a lightweight ping to a peer by their public key.
 // msg must be a plain object — will be JSON-serialised.
 // Waits for { type: 'deal_ack' } response, rejects on timeout or error.
+// Used only for deal_announce — actual deal payload lives in our Hyperdrive outbox.
 async function sendDealToPeer (counterpartyPublicKeyHex, dealId, msg) {
   const topic = crypto.discoveryKey(b4a.from(counterpartyPublicKeyHex, 'hex'))
   const tHex = b4a.toString(topic, 'hex')
@@ -412,18 +443,18 @@ function scheduleDealDelivery (deal) {
 
     try {
       await sendDealToPeer(deal.counterparty_key, deal.id, {
-        type: 'deal_request',
+        type: 'deal_announce',
         dealId: deal.id,
-        senderDriveKey: b4a.toString(drive.key, 'hex'),
-        deal: dealData
+        senderDriveKey: b4a.toString(drive.key, 'hex')
       })
 
-      // ACK received — counterparty has the deal, advance status
+      // ACK received — counterparty read the deal from our outbox
       dealData.delivered = true
       dealData.status = 'pending_counterparty'
       await drive.put(`/pending/deals/${deal.id}.json`, b4a.from(JSON.stringify(dealData)))
+      await clearOutbox(deal.id)
       pendingDeliveries.delete(deal.id)
-      // Connect to counterparty's drive to receive their response (deal_response etc.)
+      // Connect to counterparty's drive to receive their responses
       if (dealData.counterparty_drive_key) {
         connectToPeerDriveForDeals(dealData.counterparty_drive_key).catch(() => {})
       }
@@ -519,6 +550,7 @@ async function processPeerOutbox (peerDriveKeyHex, peerDrive) {
       if (msg.type === 'deal_response')  await handleDealResponse(msg)
       if (msg.type === 'deal_confirmed') await handleDealConfirmed(msg)
       if (msg.type === 'deal_cancelled') await handleIncomingCancellation(msg)
+      if (msg.type === 'deal_closed')    await handleDealClosed(msg)
     } catch (e) {
       console.error('[processPeerOutbox]', msg.type, String(e))
     }
@@ -1007,6 +1039,7 @@ bridge.server.on('request', async (req, res) => {
       }
 
       await drive.put(`/pending/deals/${id}.json`, b4a.from(JSON.stringify(deal)))
+      await writeOutbox(id, deal)  // deal persists here until counterparty ACKs
       scheduleDealDelivery(deal)
 
       return json({ id })
@@ -1104,12 +1137,87 @@ bridge.server.on('request', async (req, res) => {
       return json({ ok: true })
     }
 
+    // --- Deal: close -------------------------------------------------
+    // POST /api/close-deal  { id, role: 'initiator' | 'counterparty', outcome: 'positive' | 'neutral' | 'negative' }
+    // Caller declares their obligations fulfilled and rates the other party.
+    // First close: status moves to closed_by_<role>, outcome stored, peer notified.
+    // Second close: status moves to completed (both parties done), deal moves to history.
+    if (url === '/api/close-deal') {
+      if (!drive) return json({ error: 'drive not ready' }, 500)
+      const body = await readBody(req)
+      const { id, role, outcome } = JSON.parse(b4a.toString(body))
+      if (!id || !role || !outcome) return json({ error: 'missing fields' }, 400)
+
+      // Find the deal — could be in pending (outgoing) or incoming.
+      const folders = ['/pending/deals', '/incoming/deals']
+      let folder = null
+      let deal = null
+      for (const f of folders) {
+        const buf = await drive.get(`${f}/${id}.json`).catch(() => null)
+        if (buf) { folder = f; deal = JSON.parse(b4a.toString(buf)); break }
+      }
+      if (!deal) return json({ error: 'deal not found' }, 404)
+
+      // Only in_progress or already partially-closed deals can be closed.
+      const closeable = ['in_progress', 'closed_by_initiator', 'closed_by_counterparty']
+      if (!closeable.includes(deal.status)) return json({ error: 'deal not closeable' }, 400)
+
+      // Store our outcome — we rate the *other* party.
+      if (role === 'initiator') {
+        deal.initiator_outcome = outcome
+      } else {
+        deal.counterparty_outcome = outcome
+      }
+
+      // Determine if the other party has already closed their side.
+      const otherClosed = role === 'initiator'
+        ? deal.status === 'closed_by_counterparty'
+        : deal.status === 'closed_by_initiator'
+
+      const peerDriveKey = role === 'initiator'
+        ? deal.counterparty_drive_key
+        : deal.initiator_drive_key
+
+      if (otherClosed) {
+        // Both sides done — deal is completed.
+        deal.status = 'completed'
+        await drive.put(`/history/deals/${id}.json`, b4a.from(JSON.stringify(deal)))
+        await drive.del(`${folder}/${id}.json`).catch(() => {})
+        // Write deal_closed to outbox so peer can finalize their copy too.
+        await writeOutbox(id, { type: 'deal_closed', dealId: id, closedBy: role, outcome })
+        if (peerDriveKey) connectToPeerDriveForDeals(peerDriveKey).catch(() => {})
+      } else {
+        // First close — update status, notify peer.
+        deal.status = role === 'initiator' ? 'closed_by_initiator' : 'closed_by_counterparty'
+        await drive.put(`${folder}/${id}.json`, b4a.from(JSON.stringify(deal)))
+        await writeOutbox(id, { type: 'deal_closed', dealId: id, closedBy: role, outcome })
+        if (peerDriveKey) connectToPeerDriveForDeals(peerDriveKey).catch(() => {})
+      }
+
+      return json({ ok: true, status: deal.status })
+    }
+
     // --- Deal: history ------------------------------------------------
     // GET /api/get-history-deals
     // Returns completed, expired, and cancelled deals from /history/deals/.
     if (url === '/api/get-history-deals') {
       if (!drive) return json([])
       return json(await listDriveFolder('/history/deals'))
+    }
+
+    // --- Deal: single lookup ------------------------------------------
+    // GET /api/get-deal?id=<dealId>
+    // Finds a single deal by ID across all folders. Used by WebView to
+    // refresh DealView data after receiving a notification.
+    if (url.startsWith('/api/get-deal')) {
+      if (!drive) return json({ error: 'drive not ready' }, 500)
+      const id = new URLSearchParams(req.url.split('?')[1] ?? '').get('id')
+      if (!id) return json({ error: 'missing id' }, 400)
+      for (const folder of ['/pending/deals', '/incoming/deals', '/history/deals']) {
+        const buf = await drive.get(`${folder}/${id}.json`).catch(() => null)
+        if (buf) return json(JSON.parse(b4a.toString(buf)))
+      }
+      return json({ error: 'not found' }, 404)
     }
 
     // --- Deal: expired ids --------------------------------------------
