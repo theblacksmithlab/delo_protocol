@@ -13,11 +13,12 @@
     delivered: boolean
   }
 
-  let { myPublicKey, onNewDeal, onViewDeal, refreshKey = 0 } = $props<{
+  let { myPublicKey, onNewDeal, onViewDeal, refreshKey = 0, unreadDealIds = new Set<string>() } = $props<{
     myPublicKey: string
     onNewDeal: () => void
     onViewDeal: (deal: Deal) => void
     refreshKey?: number
+    unreadDealIds?: Set<string>
   }>()
 
   let deals   = $state<Deal[]>([])
@@ -141,14 +142,23 @@
           onclick={() => onViewDeal(deal)}
           onkeydown={(e) => e.key === 'Enter' && onViewDeal(deal)}
         >
-          <!-- Top row: direction + status badge -->
+          <!-- Top row: direction + unread bell + status badge -->
           <div class="deal-top">
             <span class="deal-direction">
               {isOutgoing(deal) ? '↑ Outgoing' : '↓ Incoming'}
             </span>
-            <span class="deal-badge {statusClass(deal)}">
-              {statusLabel(deal)}
-            </span>
+            <div class="deal-top-right">
+              {#if unreadDealIds.has(deal.id)}
+                <span class="deal-unread-bell" title="Unread update">
+                  <svg viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M10 2a6 6 0 00-6 6v2.586l-.707.707A1 1 0 004 13h12a1 1 0 00.707-1.707L16 10.586V8a6 6 0 00-6-6zM10 18a3 3 0 01-2.83-2h5.66A3 3 0 0110 18z"/>
+                  </svg>
+                </span>
+              {/if}
+              <span class="deal-badge {statusClass(deal)}">
+                {statusLabel(deal)}
+              </span>
+            </div>
           </div>
 
           <!-- Title → deal ID → counterparty (mirrors: name → key → context) -->
@@ -332,5 +342,24 @@
     background: rgba(147, 210, 255, 0.18);
     border-color: rgba(147, 210, 255, 0.5);
     box-shadow: 0 0 22px rgba(100, 180, 255, 0.35);
+  }
+
+  /* Top-right slot: bell + badge aligned together */
+  .deal-top-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* Unread bell icon on deal card */
+  .deal-unread-bell {
+    display: flex;
+    align-items: center;
+    color: #93d2ff;
+    opacity: 0.85;
+  }
+  .deal-unread-bell svg {
+    width: 13px;
+    height: 13px;
   }
 </style>

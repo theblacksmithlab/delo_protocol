@@ -40,32 +40,16 @@
     { value: 'escrow',    label: 'Escrow',    desc: '1.0× — coming soon', disabled: true }
   ]
 
-  // Accepts either a raw hex public key or a contact JSON { publicKey, driveKey }
-  function parseCounterpartyKey (input: string): string | null {
+  // Validates that the input looks like a contact key (base58, ~130 chars)
+  function isValidContactKey (input: string): boolean {
     const trimmed = input.trim()
-    try {
-      const parsed = JSON.parse(trimmed)
-      return parsed.publicKey ?? null
-    } catch {
-      return trimmed.length > 0 ? trimmed : null
-    }
-  }
-
-  // Returns driveKey if input is contact JSON, null if raw hex key
-  function parseCounterpartyDriveKey (input: string): string | null {
-    try {
-      const parsed = JSON.parse(input.trim())
-      return parsed.driveKey ?? null
-    } catch {
-      return null
-    }
+    return trimmed.length >= 120 && trimmed.length <= 145 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(trimmed)
   }
 
   function validate (): string | null {
-    if (!title.trim())                return 'Deal title is required'
-    if (!parseCounterpartyKey(cpKey)) return 'Counterparty key is required'
-    if (!parseCounterpartyDriveKey(cpKey)) return 'Use the full contact key (copy via the share button on their profile)'
-    if (!terms.trim())                return 'Your terms are required'
+    if (!title.trim())              return 'Deal title is required'
+    if (!isValidContactKey(cpKey))  return 'Paste the contact key from the counterparty\'s profile'
+    if (!terms.trim())              return 'Your terms are required'
     const amt = parseFloat(amount)
     if (!amount || isNaN(amt) || amt <= 0) return 'Enter a valid amount'
     return null
@@ -84,11 +68,10 @@
 
       const now = Math.floor(Date.now() / 1000)
       const deal = {
-        title:             title.trim(),
-        initiator_terms:   terms.trim(),
-        counterparty_key:       parseCounterpartyKey(cpKey)!,
-        counterparty_drive_key: parseCounterpartyDriveKey(cpKey),
-        original_amount:   parseFloat(amount),
+        title:           title.trim(),
+        initiator_terms: terms.trim(),
+        contactKey:      cpKey.trim(),
+        original_amount: parseFloat(amount),
         original_currency: currency.toLowerCase(),
         amount_usd:        rates.amount_usd,
         amount_rub:        rates.amount_rub,

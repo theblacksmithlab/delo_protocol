@@ -13,9 +13,10 @@
   type View = 'loading' | 'welcome' | 'creating' | 'identity' | 'findUser' | 'peerProfile' | 'newDeal' | 'dealView'
 
   let view = $state<View>('loading')
-  let publicKey = $state<string | null>(null)
-  let driveKey = $state<string | null>(null)
-  let qrDataUrl = $state<string | null>(null)
+  let publicKey  = $state<string | null>(null)
+  let driveKey   = $state<string | null>(null)
+  let contactKey = $state<string | null>(null)
+  let qrDataUrl  = $state<string | null>(null)
   let error = $state<string | null>(null)
 
   // Share modal (QR + copy contact key)
@@ -37,8 +38,8 @@
   }
 
   async function copyContactInfo () {
-    if (!publicKey || !driveKey) return
-    await navigator.clipboard.writeText(JSON.stringify({ publicKey, driveKey }))
+    if (!contactKey) return
+    await navigator.clipboard.writeText(contactKey)
     contactCopied = true
     setTimeout(() => { contactCopied = false }, 2000)
   }
@@ -47,8 +48,9 @@
 
   let peerInput = $state('')
   let peerProfile = $state<{ name: string, bio: string, hasAvatar: boolean, memberSince: string | null } | null>(null)
-  let peerPublicKey = $state<string | null>(null)
-  let peerFoundDriveKey = $state<string | null>(null)
+  let peerPublicKey      = $state<string | null>(null)
+  let peerFoundDriveKey  = $state<string | null>(null)
+  let peerFoundContactKey = $state<string | null>(null)
   let findLoading = $state(false)
   let findError = $state<string | null>(null)
 
@@ -64,6 +66,7 @@
     peerProfile = null
     peerPublicKey = null
     peerFoundDriveKey = null
+    peerFoundContactKey = null
     findError = null
   }
 
@@ -72,27 +75,16 @@
     peerProfile = null
     findLoading = true
     try {
-      let parsedDriveKey: string
-      let parsedPublicKey: string | null = null
-
-      try {
-        const parsed = JSON.parse(peerInput.trim())
-        parsedDriveKey = parsed.driveKey
-        parsedPublicKey = parsed.publicKey ?? null
-      } catch {
-        findError = 'Invalid format. Paste the full contact key provided on the user page.'
-        return
-      }
-
-      if (!parsedDriveKey) {
-        findError = 'No drive key found in input. Paste the full contact key provided on the user page.'
+      const ck = peerInput.trim()
+      if (!ck) {
+        findError = 'Paste the contact key from the user\'s profile.'
         return
       }
 
       const resp = await fetch('/api/get-peer-profile', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ driveKey: parsedDriveKey })
+        body: JSON.stringify({ contactKey: ck })
       })
 
       if (!resp.ok) {
@@ -101,9 +93,11 @@
         return
       }
 
-      peerProfile = await resp.json()
-      peerPublicKey = parsedPublicKey
-      peerFoundDriveKey = parsedDriveKey
+      const data = await resp.json()
+      peerProfile = data
+      peerPublicKey = null  // not needed separately — contactKey encodes it
+      peerFoundDriveKey = data.driveKey ?? null
+      peerFoundContactKey = ck
     } catch (e) {
       findError = e instanceof Error ? e.message : 'Unknown error'
     } finally {
@@ -125,10 +119,30 @@
   let currentDeal = $state<any>(null)
   let dealListRefreshKey = $state(0)
 
+  // Unread deal IDs — persisted in Hyperdrive, restored on startup
+  let unreadDealIds = $state(new Set<string>())
+
+  async function loadUnreadDeals () {
+    try {
+      const ids: string[] = await fetch('/api/get-unread-deals').then(r => r.json())
+      unreadDealIds = new Set(ids)
+    } catch {}
+  }
+
   function openDealView (deal: any) {
     currentDeal = deal
     previousView = view
     view = 'dealView'
+    // Mark as read: remove bell from card + persist to Hyperdrive
+    if (unreadDealIds.has(deal.id)) {
+      unreadDealIds.delete(deal.id)
+      unreadDealIds = new Set(unreadDealIds) // trigger reactivity
+      fetch('/api/mark-notification-read', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: deal.id })
+      }).catch(() => {})
+    }
   }
 
   // Accordion open/close state
@@ -204,8 +218,41 @@
     }
   }
 
-  // Notifications
-  let hasNotification = $state(false)
+  // Toast notification
+  type ToastNotif = { dealId: string; message: string; visible: boolean }
+  let toast = $state<ToastNotif | null>(null)
+  let toastTimer: ReturnType<typeof setTimeout> | null = null
+  let toastFadeTimer: ReturnType<typeof setTimeout> | null = null
+
+  const NOTIF_LABELS: Record<string, string> = {
+    new_deal:           'incoming deal',
+    deal_response:      'counterparty responded',
+    deal_confirmed:     'deal confirmed',
+    deal_cancelled:     'deal cancelled',
+    deal_closed_partial:'counterparty closed their side',
+    deal_completed:     'deal completed',
+  }
+
+  function showToast (dealId: string, title: string, type: string) {
+    if (toastTimer)      clearTimeout(toastTimer)
+    if (toastFadeTimer)  clearTimeout(toastFadeTimer)
+
+    const label = NOTIF_LABELS[type] ?? type
+    toast = { dealId, message: `${title} — ${label}`, visible: true }
+
+    // After 5s start fade, then remove
+    toastTimer = setTimeout(() => {
+      if (toast) toast = { ...toast, visible: false }
+      toastFadeTimer = setTimeout(() => { toast = null }, 400)
+    }, 5000)
+  }
+
+  function dismissToast () {
+    if (toastTimer)     clearTimeout(toastTimer)
+    if (toastFadeTimer) clearTimeout(toastFadeTimer)
+    if (toast) toast = { ...toast, visible: false }
+    toastFadeTimer = setTimeout(() => { toast = null }, 400)
+  }
 
   function playNotificationSound () {
     try {
@@ -234,14 +281,21 @@
     try {
       const res = await fetch('/api/get-notifications')
       if (!res.ok) return
-      const notifications = await res.json()
+      const notifications: { type: string; dealId: string; title: string }[] = await res.json()
       if (notifications.length === 0) return
 
-      hasNotification = true
       playNotificationSound()
       dealListRefreshKey++
 
-      // If DealView is open, refresh the deal data immediately
+      // Add all incoming dealIds to unread set
+      for (const n of notifications) {
+        if (n.dealId) {
+          unreadDealIds.add(n.dealId)
+        }
+      }
+      unreadDealIds = new Set(unreadDealIds) // trigger reactivity
+
+      // If DealView is open, refresh the deal data immediately for any relevant notification
       if (view === 'dealView' && currentDeal) {
         const r = await fetch(`/api/get-deal?id=${currentDeal.id}`)
         if (r.ok) {
@@ -249,11 +303,21 @@
           if (!fresh.error) currentDeal = fresh
         }
       }
+
+      // Show toast for the last notification — but skip if we're already viewing that deal
+      const last = notifications[notifications.length - 1]
+      const alreadyViewing = view === 'dealView' && currentDeal?.id === last.dealId
+      if (!alreadyViewing) {
+        showToast(last.dealId, last.title, last.type)
+      }
     } catch {}
   }
 
+  // Start polling as soon as identity is ready, keep running across ALL views.
+  // Stopping on non-identity views caused notifications to be missed in DealView.
   $effect(() => {
-    if (view === 'identity') {
+    if (publicKey) {
+      loadUnreadDeals()
       const interval = setInterval(pollNotifications, 10_000)
       return () => clearInterval(interval)
     }
@@ -295,19 +359,20 @@
       if (data.status === 'pending') {
         view = 'welcome'
       } else {
-        await showIdentity(data.publicKey, data.driveKey)
+        await showIdentity(data.publicKey, data.driveKey, data.contactKey ?? null)
       }
     } catch (e) {
       error = e instanceof Error ? e.message : 'Unknown error'
     }
   })
 
-  // Renders the identity screen for a given public key + drive key
-  async function showIdentity (pubKey: string, dKey: string) {
-    publicKey = pubKey
-    driveKey = dKey
-    // QR encodes both keys so anyone scanning can look up our Hyperdrive
-    const qrPayload = JSON.stringify({ publicKey: pubKey, driveKey: dKey })
+  // Renders the identity screen for a given public key + drive key + contact key
+  async function showIdentity (pubKey: string, dKey: string, ck: string | null) {
+    publicKey  = pubKey
+    driveKey   = dKey
+    contactKey = ck
+    // QR encodes the compact contact key — one string contains all three keys
+    const qrPayload = ck ?? JSON.stringify({ publicKey: pubKey, driveKey: dKey })
     qrDataUrl = await QRCode.toDataURL(qrPayload, {
       width: 200,
       margin: 1,
@@ -323,8 +388,8 @@
     try {
       const resp = await fetch('/api/create-identity')
       if (!resp.ok) throw new Error('Bare API returned ' + resp.status)
-      const { publicKey: pubKey, driveKey: dKey } = await resp.json()
-      await showIdentity(pubKey, dKey)
+      const { publicKey: pubKey, driveKey: dKey, contactKey: ck } = await resp.json()
+      await showIdentity(pubKey, dKey, ck ?? null)
     } catch (e) {
       error = e instanceof Error ? e.message : 'Unknown error'
       view = 'welcome'
@@ -393,14 +458,41 @@
 
   {:else if view === 'identity'}
     <div class="identity-card-wrap">
-      {#if hasNotification}
-        <button class="notif-bell" onclick={() => { hasNotification = false }} title="New activity">
-          <svg viewBox="0 0 20 20" fill="currentColor">
-            <path d="M10 2a6 6 0 00-6 6v2.586l-.707.707A1 1 0 004 13h12a1 1 0 00.707-1.707L16 10.586V8a6 6 0 00-6-6zM10 18a3 3 0 01-2.83-2h5.66A3 3 0 0110 18z"/>
-          </svg>
-          <span class="notif-dot"></span>
-        </button>
-      {/if}
+
+    <!-- Toast notification — top-right, auto-dismisses after 5s -->
+    {#if toast}
+      <div
+        class="toast"
+        class:toast-visible={toast.visible}
+        role="button"
+        tabindex="0"
+        onclick={() => {
+          dismissToast()
+          const dealId = toast?.dealId
+          if (dealId) {
+            fetch(`/api/get-deal?id=${dealId}`).then(r => r.json()).then(deal => {
+              if (!deal.error) openDealView(deal)
+            }).catch(() => {})
+          }
+        }}
+        onkeydown={(e) => e.key === 'Enter' && (() => {
+          dismissToast()
+          const dealId = toast?.dealId
+          if (dealId) {
+            fetch(`/api/get-deal?id=${dealId}`).then(r => r.json()).then(deal => {
+              if (!deal.error) openDealView(deal)
+            }).catch(() => {})
+          }
+        })()}
+      >
+        <svg class="toast-icon" viewBox="0 0 20 20" fill="currentColor">
+          <path d="M10 2a6 6 0 00-6 6v2.586l-.707.707A1 1 0 004 13h12a1 1 0 00.707-1.707L16 10.586V8a6 6 0 00-6-6zM10 18a3 3 0 01-2.83-2h5.66A3 3 0 0110 18z"/>
+        </svg>
+        <span class="toast-message">{toast.message}</span>
+        <button class="toast-close" onclick={(e) => { e.stopPropagation(); dismissToast() }}>✕</button>
+      </div>
+    {/if}
+
     <div class="identity-card">
 
       <!-- Header: avatar + name/key left, share button right -->
@@ -590,6 +682,7 @@
                 onNewDeal={() => openNewDeal('identity')}
                 onViewDeal={openDealView}
                 refreshKey={dealListRefreshKey}
+                unreadDealIds={unreadDealIds}
               />
             </div>
           {/if}
@@ -708,10 +801,10 @@
 
       <button
         class="new-deal-from-profile-btn"
-        onclick={() => openNewDeal('peerProfile', peerPublicKey && peerFoundDriveKey ? JSON.stringify({ publicKey: peerPublicKey, driveKey: peerFoundDriveKey }) : (peerPublicKey ?? ''))}
-        disabled={!peerPublicKey}
+        onclick={() => openNewDeal('peerProfile', peerFoundContactKey ?? '')}
+        disabled={!peerFoundContactKey}
       >
-        + New Deal with {peerProfile?.name || peerShortKey || 'this user'}
+        + New Deal with {peerProfile?.name || 'this user'}
       </button>
 
     </div>
@@ -841,4 +934,65 @@
     font-family: 'gothampro', system-ui, sans-serif;
     text-align: center;
   }
+
+  /* ─── Toast notification ─────────────────────────────────── */
+
+  .toast {
+    position: fixed;
+    top: 48px; /* below titlebar */
+    right: 12px;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    max-width: 280px;
+    padding: 10px 12px;
+    background: rgba(30, 33, 40, 0.92);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(147, 210, 255, 0.25);
+    border-radius: 12px;
+    box-shadow:
+      0 4px 24px rgba(0, 0, 0, 0.4),
+      0 0 12px rgba(100, 180, 255, 0.12);
+    cursor: pointer;
+    opacity: 0;
+    transform: translateX(12px);
+    transition: opacity 0.25s ease, transform 0.25s ease;
+    pointer-events: none;
+  }
+
+  .toast.toast-visible {
+    opacity: 1;
+    transform: translateX(0);
+    pointer-events: auto;
+  }
+
+  .toast-icon {
+    width: 14px;
+    height: 14px;
+    color: #93d2ff;
+    flex-shrink: 0;
+  }
+
+  .toast-message {
+    font-size: 12px;
+    color: #e2e8f0;
+    line-height: 1.4;
+    flex: 1;
+    text-align: left;
+  }
+
+  .toast-close {
+    background: none;
+    border: none;
+    color: #64748b;
+    font-size: 11px;
+    cursor: pointer;
+    padding: 0;
+    font-family: inherit;
+    flex-shrink: 0;
+    transition: color 0.15s;
+  }
+  .toast-close:hover { color: #94a3b8; }
 </style>

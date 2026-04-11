@@ -10,6 +10,7 @@ import b4a from 'b4a'
 import https from 'bare-https'
 import Corestore from 'corestore'
 import Hyperdrive from 'hyperdrive'
+import bs58 from 'bs58'
 
 const storage = Pear.config.storage
 const keypairPath   = join(storage, 'keypair.json')
@@ -19,8 +20,9 @@ const corestorePath = join(storage, 'corestore')
 mkdirSync(storage, { recursive: true })
 
 // Global references — set during startup or identity creation
-let store = null
-let drive = null
+let store       = null
+let drive       = null
+let dealLogCore = null  // append-only Hypercore for completed deal records
 let swarm = null     // persistent swarm that announces our own drive to DHT
 let msgSwarm = null  // listens for incoming deal messages on our public key topic
 let outSwarm = null  // persistent pre-bootstrapped swarm for outgoing messages
@@ -70,6 +72,29 @@ const pendingNotifications = []
 function pushNotification (n) {
   console.log('[notify →UI]', n.type, 'dealId:', n.dealId?.slice(0, 8), '|', n.title)
   pendingNotifications.push(n)
+  writeUnread(n.dealId).catch(() => {})
+}
+
+// Persists unread deal IDs to /notifications/unread.json in Hyperdrive.
+// Called whenever a notification arrives. Survives app restarts.
+async function writeUnread (dealId) {
+  if (!drive || !dealId) return
+  const buf = await drive.get('/notifications/unread.json').catch(() => null)
+  const ids = buf ? JSON.parse(b4a.toString(buf)) : []
+  if (!ids.includes(dealId)) {
+    ids.push(dealId)
+    await drive.put('/notifications/unread.json', b4a.from(JSON.stringify(ids)))
+  }
+}
+
+// Removes a single dealId from /notifications/unread.json.
+// Called when the user opens DealView for that deal.
+async function clearUnread (dealId) {
+  if (!drive || !dealId) return
+  const buf = await drive.get('/notifications/unread.json').catch(() => null)
+  if (!buf) return
+  const ids = JSON.parse(b4a.toString(buf)).filter(id => id !== dealId)
+  await drive.put('/notifications/unread.json', b4a.from(JSON.stringify(ids)))
 }
 
 // ---------------------------------------------------------------------------
@@ -104,6 +129,62 @@ async function initStore () {
   await store.ready()
 }
 
+// ---------------------------------------------------------------------------
+// Contact key encoding — packs publicKey + driveKey + dealLogKey (3 × 32 bytes)
+// into a single base58 string (~130 chars). Clean to copy/share, easy to parse.
+// ---------------------------------------------------------------------------
+
+function encodeContactKey (publicKeyHex, driveKeyHex, dealLogKeyHex) {
+  const bytes = new Uint8Array(96)
+  bytes.set(b4a.from(publicKeyHex, 'hex'), 0)
+  bytes.set(b4a.from(driveKeyHex, 'hex'), 32)
+  bytes.set(b4a.from(dealLogKeyHex, 'hex'), 64)
+  return bs58.encode(bytes)
+}
+
+function decodeContactKey (str) {
+  const bytes = bs58.decode(str)
+  if (bytes.length !== 96) throw new Error('Invalid contact key')
+  return {
+    publicKey:  b4a.toString(bytes.slice(0, 32), 'hex'),
+    driveKey:   b4a.toString(bytes.slice(32, 64), 'hex'),
+    dealLogKey: b4a.toString(bytes.slice(64, 96), 'hex')
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Deal log — append-only Hypercore for completed deals.
+// Named core in the same Corestore as the drive — automatically replicated
+// via the existing swarm connection when a peer connects.
+// ---------------------------------------------------------------------------
+
+async function initDealLog () {
+  if (!store || dealLogCore) return
+  dealLogCore = store.get({ name: 'deal-log' })
+  await dealLogCore.ready()
+  // Persist key to profile.json so peers can discover our log
+  const buf = await drive.get('/profile.json').catch(() => null)
+  if (buf) {
+    const profile = JSON.parse(b4a.toString(buf))
+    const keyHex = b4a.toString(dealLogCore.key, 'hex')
+    if (profile.dealLogKey !== keyHex) {
+      profile.dealLogKey = keyHex
+      await drive.put('/profile.json', b4a.from(JSON.stringify(profile)))
+    }
+  }
+  console.log('[deal-log] ready, key:', b4a.toString(dealLogCore.key, 'hex').slice(0, 16) + '...', 'blocks:', dealLogCore.length)
+}
+
+async function appendToDealLog (deal) {
+  if (!dealLogCore) return
+  try {
+    await dealLogCore.append(b4a.from(JSON.stringify(deal)))
+    console.log('[deal-log] appended deal:', deal.id?.slice(0, 8), '— total blocks:', dealLogCore.length)
+  } catch (e) {
+    console.error('[deal-log] append failed:', String(e))
+  }
+}
+
 async function openDrive () {
   await initStore()
   const saved = JSON.parse(readFileSync(drivePath, 'utf8'))
@@ -120,15 +201,21 @@ async function createDrive () {
     key: b4a.toString(drive.key, 'hex')
   }))
 
+  // Create the deal log core so its key is available for the profile
+  dealLogCore = store.get({ name: 'deal-log' })
+  await dealLogCore.ready()
+
   const emptyProfile = {
     name: '',
     bio: '',
     currency: 'USD',
     hasAvatar: false,
     avatarMime: '',
-    memberSince: new Date().toISOString()
+    memberSince: new Date().toISOString(),
+    dealLogKey: b4a.toString(dealLogCore.key, 'hex')
   }
   await drive.put('/profile.json', b4a.from(JSON.stringify(emptyProfile)))
+  console.log('[deal-log] created, key:', b4a.toString(dealLogCore.key, 'hex').slice(0, 16) + '...')
 }
 
 // Announces our own Hyperdrive to Hyperswarm DHT so peers can replicate it.
@@ -182,7 +269,6 @@ async function setupMsgSwarm (keypair) {
         outSwarm.leave(t)
       }
       clearTimeout(pending.timer)
-
       console.log('[send →]', pending.payload.type, 'dealId:', pending.payload.dealId?.slice(0, 8))
       socket.write(b4a.from(JSON.stringify(pending.payload)))
       socket.end()
@@ -206,6 +292,10 @@ async function setupMsgSwarm (keypair) {
       socket.on('error', pending.reject)
       return
     }
+    // No matching pending send for any topic on this connection.
+    // Close immediately so Hyperswarm can reconnect when we have something to send.
+    // Without this, the socket hangs open and Hyperswarm won't create a new connection.
+    socket.end()
   })
 }
 
@@ -320,7 +410,11 @@ async function handleDealConfirmed ({ dealId }) {
   const buf = await drive.get(`/incoming/deals/${dealId}.json`).catch(() => null)
   if (!buf) return
   const deal = JSON.parse(b4a.toString(buf))
-  if (deal.status === 'in_progress') return // idempotent: already processed
+  // Only apply if we're in the exact state that precedes in_progress.
+  // Checking === 'in_progress' is NOT safe: deal_confirmed persists in initiator's
+  // outbox indefinitely, so this handler re-fires on every subsequent initiator
+  // drive write — which would reset closed_by_counterparty back to in_progress.
+  if (deal.status !== 'pending_initiator') return
   deal.status = 'in_progress'
   await drive.put(`/incoming/deals/${dealId}.json`, b4a.from(JSON.stringify(deal)))
   await clearOutbox(dealId) // clear our deal_response from outbox — deal is moving forward
@@ -334,7 +428,7 @@ async function handleDealConfirmed ({ dealId }) {
 //     closed_by_<role>, store their outcome field, send notification.
 //   - If this is the SECOND close (our copy is already closed_by_<our_role>): both
 //     parties have closed — move to completed, clear both outbox entries.
-async function handleDealClosed ({ dealId, closedBy, outcome }) {
+async function handleDealClosed ({ dealId, closedBy, outcome, outcomeComment }) {
   if (!drive) return
 
   const folders = ['/pending/deals', '/incoming/deals']
@@ -347,14 +441,16 @@ async function handleDealClosed ({ dealId, closedBy, outcome }) {
   }
   if (!deal) return // already in history or unknown
 
-  // Store the other party's outcome rating for us.
+  // Store the other party's outcome rating (and optional comment) for us.
   // closedBy tells us who sent this message; their outcome field rates the *other* party.
   if (closedBy === 'initiator') {
     if (deal.initiator_outcome !== undefined && deal.initiator_outcome !== null) return // idempotent
     deal.initiator_outcome = outcome
+    deal.initiator_outcome_comment = outcomeComment ?? null
   } else {
     if (deal.counterparty_outcome !== undefined && deal.counterparty_outcome !== null) return // idempotent
     deal.counterparty_outcome = outcome
+    deal.counterparty_outcome_comment = outcomeComment ?? null
   }
 
   // Determine what our own close status is (if we've already closed our side).
@@ -370,6 +466,7 @@ async function handleDealClosed ({ dealId, closedBy, outcome }) {
     await drive.put(`/history/deals/${dealId}.json`, b4a.from(JSON.stringify(deal)))
     await drive.del(`${folder}/${dealId}.json`).catch(() => {})
     await clearOutbox(dealId) // remove our own deal_closed from outbox
+    await appendToDealLog(deal)
     pushNotification({ type: 'deal_completed', dealId, title: deal.title ?? 'Deal' })
   } else {
     // First close received — update status to show which party has closed.
@@ -397,11 +494,15 @@ async function sendDealToPeer (counterpartyPublicKeyHex, dealId, msg) {
         if (idx !== -1) queue.splice(idx, 1)
         if (queue.length === 0) {
           pendingSends.delete(tHex)
-          outSwarm.leave(topic)
+          // Do NOT leave the topic — keep it joined so Hyperswarm continues
+          // looking for the peer across retries. DHT cold-start propagation
+          // can exceed 15s, and leaving+rejoining resets the lookup from scratch.
+          // Topic is left by the connection handler after successful delivery,
+          // or by cleanupExpiredDeals when the deal expires.
         }
       }
       reject(new Error('Peer not reachable (timeout)'))
-    }, 15000)
+    }, 45_000)
 
     // First message to this topic — join the swarm topic
     if (!pendingSends.has(tHex)) {
@@ -604,6 +705,15 @@ async function cleanupExpiredDeals () {
           if (retry.timer) clearTimeout(retry.timer)
           pendingDeliveries.delete(deal.id)
         }
+        // Clean up any lingering outSwarm topic for this deal's counterparty
+        if (outSwarm && deal.counterparty_key) {
+          const t = crypto.discoveryKey(b4a.from(deal.counterparty_key, 'hex'))
+          const tHex = b4a.toString(t, 'hex')
+          if (pendingSends.has(tHex)) {
+            pendingSends.delete(tHex)
+            outSwarm.leave(t)
+          }
+        }
       }
     }
   }
@@ -700,6 +810,7 @@ const existing = loadKeypair()
 
 if (existing && existsSync(drivePath)) {
   await openDrive()
+  await initDealLog()
   await announceToSwarm()
   await setupMsgSwarm(existing)
   await cleanupExpiredDeals()
@@ -733,13 +844,13 @@ bridge.server.on('request', async (req, res) => {
     if (url === '/api/get-identity') {
       if (!existsSync(keypairPath)) return json({ status: 'pending' })
       const saved = JSON.parse(readFileSync(keypairPath, 'utf8'))
-      const driveSaved = existsSync(drivePath)
-        ? JSON.parse(readFileSync(drivePath, 'utf8'))
-        : null
-      return json({
-        publicKey: saved.publicKey,
-        driveKey: driveSaved ? driveSaved.key : null
-      })
+      const driveSaved = existsSync(drivePath) ? JSON.parse(readFileSync(drivePath, 'utf8')) : null
+      if (!driveSaved) return json({ publicKey: saved.publicKey, driveKey: null })
+      // Read dealLogKey from profile.json (written by initDealLog / createDrive)
+      const profileBuf = drive ? await drive.get('/profile.json').catch(() => null) : null
+      const dealLogKey = profileBuf ? (JSON.parse(b4a.toString(profileBuf)).dealLogKey ?? null) : null
+      const contactKey = dealLogKey ? encodeContactKey(saved.publicKey, driveSaved.key, dealLogKey) : null
+      return json({ publicKey: saved.publicKey, driveKey: driveSaved.key, dealLogKey, contactKey })
     }
 
     // --- Identity: create -----------------------------------------------
@@ -748,20 +859,25 @@ bridge.server.on('request', async (req, res) => {
         // Idempotent: keypair already exists — return existing keys
         const saved = JSON.parse(readFileSync(keypairPath, 'utf8'))
         if (!drive && existsSync(drivePath)) await openDrive()
+        if (!dealLogCore) await initDealLog()
         if (!swarm) await announceToSwarm()
         const driveSaved = JSON.parse(readFileSync(drivePath, 'utf8'))
-        return json({ publicKey: saved.publicKey, driveKey: driveSaved.key })
+        const dealLogKey = b4a.toString(dealLogCore.key, 'hex')
+        const contactKey = encodeContactKey(saved.publicKey, driveSaved.key, dealLogKey)
+        return json({ publicKey: saved.publicKey, driveKey: driveSaved.key, dealLogKey, contactKey })
       }
 
       const keypair = generateAndSaveKeypair()
       const publicKey = b4a.toString(keypair.publicKey, 'hex')
 
-      await createDrive()
+      await createDrive()   // also creates dealLogCore + writes dealLogKey to profile.json
       await announceToSwarm()
       await setupMsgSwarm(keypair)
 
       const driveSaved = JSON.parse(readFileSync(drivePath, 'utf8'))
-      return json({ publicKey, driveKey: driveSaved.key })
+      const dealLogKey = b4a.toString(dealLogCore.key, 'hex')
+      const contactKey = encodeContactKey(publicKey, driveSaved.key, dealLogKey)
+      return json({ publicKey, driveKey: driveSaved.key, dealLogKey, contactKey })
     }
 
     // --- Identity: delete -----------------------------------------------
@@ -929,13 +1045,21 @@ bridge.server.on('request', async (req, res) => {
     // Creates a short-lived Hyperswarm connection, destroys it when done.
     if (url === '/api/get-peer-profile') {
       const body = await readBody(req)
-      const { driveKey: peerDriveKey } = JSON.parse(b4a.toString(body))
+      const { contactKey: peerContactKey } = JSON.parse(b4a.toString(body))
+      if (!peerContactKey) return json({ error: 'contactKey required' }, 400)
+
+      let peerPublicKey, peerDriveKey, peerDealLogKey
+      try {
+        ({ publicKey: peerPublicKey, driveKey: peerDriveKey, dealLogKey: peerDealLogKey } = decodeContactKey(peerContactKey))
+      } catch {
+        return json({ error: 'Invalid contact key' }, 400)
+      }
 
       // Fast path: own profile — data is already in our open drive
       if (drive && b4a.toString(drive.key, 'hex') === peerDriveKey) {
         const buf = await drive.get('/profile.json')
         if (!buf) return json({ error: 'Profile not found' }, 404)
-        return json(JSON.parse(b4a.toString(buf)))
+        return json({ ...JSON.parse(b4a.toString(buf)), driveKey: peerDriveKey })
       }
 
       // Cache drive instance (keeps Hypercore data between requests) but always
@@ -970,7 +1094,7 @@ bridge.server.on('request', async (req, res) => {
 
         const profileBuf = await peerDrive.get('/profile.json')
         if (!profileBuf) return json({ error: 'Profile not found' }, 404)
-        return json(JSON.parse(b4a.toString(profileBuf)))
+        return json({ ...JSON.parse(b4a.toString(profileBuf)), driveKey: peerDriveKey })
       } finally {
         freshSwarm.destroy()
       }
@@ -1004,6 +1128,15 @@ bridge.server.on('request', async (req, res) => {
       const body = await readBody(req)
       const incoming = JSON.parse(b4a.toString(body))
 
+      // Decode contactKey to extract counterparty's public key and drive key
+      if (!incoming.contactKey) return json({ error: 'contactKey required' }, 400)
+      let cpPublicKey, cpDriveKey
+      try {
+        ({ publicKey: cpPublicKey, driveKey: cpDriveKey } = decodeContactKey(incoming.contactKey))
+      } catch {
+        return json({ error: 'Invalid contact key' }, 400)
+      }
+
       // Generate a random 32-byte deal ID, encoded as hex
       const idBytes = crypto.randomBytes(32)
       const id = b4a.toString(idBytes, 'hex')
@@ -1012,8 +1145,8 @@ bridge.server.on('request', async (req, res) => {
         id,
         initiator_key:       b4a.toString(keypairData.publicKey, 'hex'),
         initiator_drive_key: b4a.toString(drive.key, 'hex'),
-        counterparty_key:    incoming.counterparty_key,
-        counterparty_drive_key: incoming.counterparty_drive_key ?? null,
+        counterparty_key:       cpPublicKey,
+        counterparty_drive_key: cpDriveKey,
         timestamp:          incoming.timestamp,
         expires_at:         incoming.expires_at,
         original_amount:    incoming.original_amount,
@@ -1145,7 +1278,7 @@ bridge.server.on('request', async (req, res) => {
     if (url === '/api/close-deal') {
       if (!drive) return json({ error: 'drive not ready' }, 500)
       const body = await readBody(req)
-      const { id, role, outcome } = JSON.parse(b4a.toString(body))
+      const { id, role, outcome, outcomeComment } = JSON.parse(b4a.toString(body))
       if (!id || !role || !outcome) return json({ error: 'missing fields' }, 400)
 
       // Find the deal — could be in pending (outgoing) or incoming.
@@ -1162,11 +1295,13 @@ bridge.server.on('request', async (req, res) => {
       const closeable = ['in_progress', 'closed_by_initiator', 'closed_by_counterparty']
       if (!closeable.includes(deal.status)) return json({ error: 'deal not closeable' }, 400)
 
-      // Store our outcome — we rate the *other* party.
+      // Store our outcome and optional comment — we rate the *other* party.
       if (role === 'initiator') {
         deal.initiator_outcome = outcome
+        deal.initiator_outcome_comment = outcomeComment || null
       } else {
         deal.counterparty_outcome = outcome
+        deal.counterparty_outcome_comment = outcomeComment || null
       }
 
       // Determine if the other party has already closed their side.
@@ -1178,19 +1313,22 @@ bridge.server.on('request', async (req, res) => {
         ? deal.counterparty_drive_key
         : deal.initiator_drive_key
 
+      const outboxMsg = { type: 'deal_closed', dealId: id, closedBy: role, outcome, outcomeComment: outcomeComment || null }
+
       if (otherClosed) {
         // Both sides done — deal is completed.
         deal.status = 'completed'
         await drive.put(`/history/deals/${id}.json`, b4a.from(JSON.stringify(deal)))
         await drive.del(`${folder}/${id}.json`).catch(() => {})
+        await appendToDealLog(deal)
         // Write deal_closed to outbox so peer can finalize their copy too.
-        await writeOutbox(id, { type: 'deal_closed', dealId: id, closedBy: role, outcome })
+        await writeOutbox(id, outboxMsg)
         if (peerDriveKey) connectToPeerDriveForDeals(peerDriveKey).catch(() => {})
       } else {
         // First close — update status, notify peer.
         deal.status = role === 'initiator' ? 'closed_by_initiator' : 'closed_by_counterparty'
         await drive.put(`${folder}/${id}.json`, b4a.from(JSON.stringify(deal)))
-        await writeOutbox(id, { type: 'deal_closed', dealId: id, closedBy: role, outcome })
+        await writeOutbox(id, outboxMsg)
         if (peerDriveKey) connectToPeerDriveForDeals(peerDriveKey).catch(() => {})
       }
 
@@ -1203,6 +1341,20 @@ bridge.server.on('request', async (req, res) => {
     if (url === '/api/get-history-deals') {
       if (!drive) return json([])
       return json(await listDriveFolder('/history/deals'))
+    }
+
+    // GET /api/get-deal-log
+    // Returns all entries from the local deal log Hypercore as an array.
+    // Used for testing and debugging; Step 6 will read it for reputation calculation.
+    if (url === '/api/get-deal-log') {
+      if (!dealLogCore) return json([])
+      const entries = []
+      for (let i = 0; i < dealLogCore.length; i++) {
+        const buf = await dealLogCore.get(i).catch(() => null)
+        if (!buf) continue
+        try { entries.push(JSON.parse(b4a.toString(buf))) } catch {}
+      }
+      return json(entries)
     }
 
     // --- Deal: single lookup ------------------------------------------
@@ -1238,6 +1390,24 @@ bridge.server.on('request', async (req, res) => {
       const notifications = [...pendingNotifications]
       pendingNotifications.length = 0
       return json(notifications)
+    }
+
+    // GET /api/get-unread-deals
+    // Returns list of dealIds with unread notifications (from Hyperdrive).
+    // Called on WebView startup to restore bell state after app restart.
+    if (url === '/api/get-unread-deals') {
+      if (!drive) return json([])
+      const buf = await drive.get('/notifications/unread.json').catch(() => null)
+      return json(buf ? JSON.parse(b4a.toString(buf)) : [])
+    }
+
+    // POST /api/mark-notification-read  { id }
+    // Removes a dealId from the unread list. Called when user opens DealView.
+    if (url === '/api/mark-notification-read') {
+      const body = await readBody(req)
+      const { id } = JSON.parse(b4a.toString(body))
+      await clearUnread(id)
+      return json({ ok: true })
     }
 
     bridgeHandler(req, res)

@@ -92,6 +92,10 @@ pub struct Deal {
     pub initiator_outcome: Option<Outcome>,    // how initiator rates the counterparty's performance
     pub counterparty_outcome: Option<Outcome>, // how counterparty rates the initiator's performance
 
+    // Optional free-text comment accompanying each party's outcome rating.
+    pub initiator_outcome_comment: Option<String>,
+    pub counterparty_outcome_comment: Option<String>,
+
     // Terms — what each party commits to do
     pub initiator_terms: String,             // filled at deal creation
     pub counterparty_terms: Option<String>,  // filled when counterparty responds
@@ -217,6 +221,8 @@ mod tests {
             status: DealStatus::Completed,
             initiator_outcome,
             counterparty_outcome,
+            initiator_outcome_comment: None,
+            counterparty_outcome_comment: None,
             initiator_terms: "Deliver 10 units by Friday".to_string(),
             counterparty_terms: Some("Pay $100 on delivery".to_string()),
             review_text: None,

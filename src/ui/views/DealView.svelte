@@ -17,8 +17,10 @@
     expires_at: number
     initiator_terms: string
     counterparty_terms: string | null
-    initiator_outcome: string | null   // how initiator rated the counterparty
-    counterparty_outcome: string | null // how counterparty rated the initiator
+    initiator_outcome: string | null
+    counterparty_outcome: string | null
+    initiator_outcome_comment: string | null
+    counterparty_outcome_comment: string | null
     delivered: boolean
   }
 
@@ -41,10 +43,11 @@
   let confirmError  = $state<string | null>(null)
 
   // Close flow state
-  let showClosePanel  = $state(false)
-  let selectedOutcome = $state<'positive' | 'neutral' | 'negative' | null>(null)
-  let closing         = $state(false)
-  let closeError      = $state<string | null>(null)
+  let showClosePanel   = $state(false)
+  let selectedOutcome  = $state<'positive' | 'neutral' | 'negative' | null>(null)
+  let outcomeComment   = $state('')
+  let closing          = $state(false)
+  let closeError       = $state<string | null>(null)
 
   const OUTCOMES: { value: 'positive' | 'neutral' | 'negative'; label: string; desc: string }[] = [
     { value: 'positive', label: '👍 Positive', desc: 'Fulfilled as agreed' },
@@ -193,9 +196,10 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          id:      deal.id,
-          role:    isInitiator ? 'initiator' : 'counterparty',
-          outcome: selectedOutcome,
+          id:             deal.id,
+          role:           isInitiator ? 'initiator' : 'counterparty',
+          outcome:        selectedOutcome,
+          outcomeComment: outcomeComment.trim() || null,
         })
       })
       if (!res.ok) {
@@ -304,25 +308,23 @@
 
     <!-- Outcomes — shown on completed deals -->
     {#if deal.status === 'completed'}
+      {@const myOutcome      = isInitiator ? deal.initiator_outcome      : deal.counterparty_outcome}
+      {@const myComment      = isInitiator ? deal.initiator_outcome_comment   : deal.counterparty_outcome_comment}
+      {@const theirOutcome   = isInitiator ? deal.counterparty_outcome    : deal.initiator_outcome}
+      {@const theirComment   = isInitiator ? deal.counterparty_outcome_comment : deal.initiator_outcome_comment}
       <div class="field">
         <div class="field-label">Your rating</div>
-        <div class="field-value outcome-display outcome-{isInitiator ? (deal.initiator_outcome ?? 'none') : (deal.counterparty_outcome ?? 'none')}">
-          {#if isInitiator}
-            {deal.initiator_outcome ?? '—'}
-          {:else}
-            {deal.counterparty_outcome ?? '—'}
-          {/if}
+        <div class="field-value outcome-display outcome-{myOutcome ?? 'none'}">
+          {myOutcome ?? '—'}
         </div>
+        <div class="outcome-comment">{myComment ?? 'No comment'}</div>
       </div>
       <div class="field">
-        <div class="field-label">Their rating of you</div>
-        <div class="field-value outcome-display outcome-{isInitiator ? (deal.counterparty_outcome ?? 'none') : (deal.initiator_outcome ?? 'none')}">
-          {#if isInitiator}
-            {deal.counterparty_outcome ?? '—'}
-          {:else}
-            {deal.initiator_outcome ?? '—'}
-          {/if}
+        <div class="field-label">Counterparty's rating of you</div>
+        <div class="field-value outcome-display outcome-{theirOutcome ?? 'none'}">
+          {theirOutcome ?? '—'}
         </div>
+        <div class="outcome-comment">{theirComment ?? 'No comment'}</div>
       </div>
     {/if}
 
@@ -435,6 +437,13 @@
           {/each}
         </div>
 
+        <textarea
+          class="outcome-comment-input"
+          placeholder="Add a comment (optional)"
+          bind:value={outcomeComment}
+          rows="2"
+        ></textarea>
+
         {#if closeError}
           <div class="action-error">{closeError}</div>
         {/if}
@@ -442,7 +451,7 @@
         <div class="close-actions">
           <button
             class="keep-deal-btn"
-            onclick={() => { showClosePanel = false; selectedOutcome = null }}
+            onclick={() => { showClosePanel = false; selectedOutcome = null; outcomeComment = '' }}
             disabled={closing}
           >
             Back
@@ -905,4 +914,30 @@
   .outcome-neutral  { color: #94a3b8; }
   .outcome-negative { color: #f87171; }
   .outcome-none     { color: #64748b; }
+
+  .outcome-comment {
+    font-size: 12px;
+    color: #64748b;
+    font-style: italic;
+    margin-top: 2px;
+  }
+
+  /* Outcome comment textarea in close flow */
+  .outcome-comment-input {
+    width: 100%;
+    box-sizing: border-box;
+    background: #1e2128;
+    border: 1px solid #374151;
+    border-radius: 8px;
+    color: #f0f4f8;
+    font-family: inherit;
+    font-size: 13px;
+    padding: 8px 12px;
+    outline: none;
+    resize: vertical;
+    line-height: 1.5;
+    transition: border-color 0.15s;
+  }
+  .outcome-comment-input:focus { border-color: #64748b; }
+  .outcome-comment-input::placeholder { color: #64748b; }
 </style>
