@@ -5,6 +5,7 @@
   import NewDeal from './views/NewDeal.svelte'
   import DealList from './views/DealList.svelte'
   import DealView from './views/DealView.svelte'
+  import init, { calculate_reputation } from '../../wasm-pkg/trust_core.js'
 
   // 'loading'  — reading files on startup
   // 'welcome'  — no identity yet, show onboarding screen
@@ -35,6 +36,14 @@
     if (years < 1 / 12) return '<1mo'
     if (years < 1) return Math.round(years * 12) + 'mo'
     return years.toFixed(1) + 'y'
+  }
+
+  function formatVolume (volume: number, currency: string): string {
+    if (currency === 'BTC') return volume.toFixed(4).replace(/\.?0+$/, '') + ' BTC'
+    if (currency === 'RUB') return '₽' + Math.round(volume).toLocaleString('ru-RU')
+    if (currency === 'EUR') return '€' + volume.toLocaleString('en-US', { maximumFractionDigits: 2 })
+    if (currency === 'USDT') return '₮' + volume.toLocaleString('en-US', { maximumFractionDigits: 2 })
+    return '$' + volume.toLocaleString('en-US', { maximumFractionDigits: 2 })
   }
 
   async function copyContactInfo () {
@@ -162,9 +171,52 @@
 
   // Currency symbol for trust volume display — must be after profile declaration
   let currencySymbol = $derived(
-    ({ USD: '$', RUB: '₽', BTC: '₿' } as Record<string, string>)[profile.currency] ?? '$'
+    ({ USD: '$', RUB: '₽', BTC: '₿', EUR: '€', USDT: '₮' } as Record<string, string>)[profile.currency] ?? '$'
   )
   let profileLoaded = $state(false)
+
+  // ─── Reputation ──────────────────────────────────────────────────────────────
+
+  type ReputationStats = {
+    total_volume: number
+    positive_volume: number
+    negative_volume: number
+    success_rate: number | null
+    deal_count: number
+    positive_count: number
+    neutral_count: number
+    negative_count: number
+  }
+  let reputation = $state<ReputationStats | null>(null)
+  let wasmReady  = $state(false)
+
+  // Initialize WASM once on mount
+  onMount(async () => {
+    await init()
+    wasmReady = true
+  })
+
+  async function loadReputation () {
+    if (!wasmReady || !publicKey) return
+    try {
+      const deals = await fetch('/api/get-deal-log').then(r => r.json())
+      if (!Array.isArray(deals) || deals.length === 0) { reputation = null; return }
+      const result = calculate_reputation(
+        JSON.stringify(deals),
+        publicKey,
+        profile.currency.toLowerCase()
+      )
+      reputation = result ?? null
+    } catch {
+      reputation = null
+    }
+  }
+
+  // Reload reputation when WASM is ready, identity is loaded, or currency changes
+  $effect(() => {
+    void profile.currency  // track currency as dependency
+    if (wasmReady && publicKey) loadReputation()
+  })
   let avatarPreviewUrl = $state<string | null>(null)
 
   // Edit mode — working copy, only committed on Save
@@ -532,21 +584,44 @@
         </button>
       </div>
 
-      <!-- Trust volume block — deal count shown only when > 0 (wired in Step 6) -->
+      <!-- Trust volume block -->
       <div class="trust-block">
         <div class="trust-label">TRUST VOLUME</div>
-        <div class="trust-amount">{currencySymbol}0</div>
+        {#if reputation && reputation.deal_count > 0}
+          <div class="trust-amount">{formatVolume(reputation.total_volume, profile.currency)}</div>
+        {:else}
+          <div class="trust-amount trust-amount-empty">{currencySymbol}0</div>
+        {/if}
       </div>
+
+      <!-- Outcome bar: blue = positive volume, red = negative volume -->
+      {#if reputation && (reputation.positive_volume > 0 || reputation.negative_volume > 0)}
+        {@const total = reputation.positive_volume + reputation.negative_volume}
+        {@const posPercent = (reputation.positive_volume / total) * 100}
+        {@const negPercent = (reputation.negative_volume / total) * 100}
+        <div class="outcome-bar">
+          <div class="outcome-bar-pos" style="width: {posPercent}%"></div>
+          <div class="outcome-bar-neg" style="width: {negPercent}%"></div>
+        </div>
+      {:else}
+        <div class="outcome-bar outcome-bar-empty"></div>
+      {/if}
 
       <!-- Stats row -->
       <div class="stats-row">
         <div class="stat-cell">
-          <div class="stat-value">0</div>
+          <div class="stat-value">{reputation?.deal_count ?? 0}</div>
           <div class="stat-label">Deals</div>
         </div>
         <div class="stat-cell">
-          <div class="stat-value">0</div>
-          <div class="stat-label">Counterparties</div>
+          <div class="stat-value">
+            {#if reputation?.success_rate !== null && reputation?.success_rate !== undefined}
+              {reputation.success_rate.toFixed(0)}%
+            {:else}
+              —
+            {/if}
+          </div>
+          <div class="stat-label">Satisfied</div>
         </div>
         <div class="stat-cell">
           <div class="stat-value">{memberSinceDisplay(profile.memberSince)}</div>
