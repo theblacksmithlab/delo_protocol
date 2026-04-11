@@ -63,6 +63,15 @@
   const isInitiator = $derived(deal.initiator_key === myPublicKey)
   const otherKey    = $derived(isInitiator ? deal.counterparty_key : deal.initiator_key)
 
+  // Direction-aware badge class — mirrors statusClass() in DealList
+  const badgeClass = $derived((() => {
+    if (deal.status === 'pending_counterparty')
+      return isInitiator ? 'status-pending-initiator' : 'status-pending-counterparty'
+    if (deal.status === 'pending_initiator')
+      return isInitiator ? 'status-pending-counterparty' : 'status-pending-initiator'
+    return 'status-' + deal.status.replace(/_/g, '-')
+  })())
+
   const isNegotiating = $derived(
     deal.status === 'initiated' ||
     deal.status === 'pending_counterparty' ||
@@ -243,7 +252,7 @@
   <!-- Header -->
   <div class="view-header">
     <h2 class="view-title">{deal.title}</h2>
-    <span class="deal-badge status-{deal.status.replace(/_/g, '-')}">
+    <span class="deal-badge {badgeClass}">
       {statusLabel(deal.status)}
     </span>
   </div>
