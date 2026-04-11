@@ -3,17 +3,20 @@
   import QRCode from 'qrcode'
   import './App.css'
   import NewDeal from './views/NewDeal.svelte'
+  import DealList from './views/DealList.svelte'
+  import DealView from './views/DealView.svelte'
 
   // 'loading'  — reading files on startup
   // 'welcome'  — no identity yet, show onboarding screen
   // 'creating' — waiting for Bare to generate keypair
   // 'identity' — keypair exists, show public key + QR
-  type View = 'loading' | 'welcome' | 'creating' | 'identity' | 'findUser' | 'peerProfile' | 'newDeal'
+  type View = 'loading' | 'welcome' | 'creating' | 'identity' | 'findUser' | 'peerProfile' | 'newDeal' | 'dealView'
 
   let view = $state<View>('loading')
-  let publicKey = $state<string | null>(null)
-  let driveKey = $state<string | null>(null)
-  let qrDataUrl = $state<string | null>(null)
+  let publicKey  = $state<string | null>(null)
+  let driveKey   = $state<string | null>(null)
+  let contactKey = $state<string | null>(null)
+  let qrDataUrl  = $state<string | null>(null)
   let error = $state<string | null>(null)
 
   // Share modal (QR + copy contact key)
@@ -35,8 +38,8 @@
   }
 
   async function copyContactInfo () {
-    if (!publicKey || !driveKey) return
-    await navigator.clipboard.writeText(JSON.stringify({ publicKey, driveKey }))
+    if (!contactKey) return
+    await navigator.clipboard.writeText(contactKey)
     contactCopied = true
     setTimeout(() => { contactCopied = false }, 2000)
   }
@@ -45,8 +48,9 @@
 
   let peerInput = $state('')
   let peerProfile = $state<{ name: string, bio: string, hasAvatar: boolean, memberSince: string | null } | null>(null)
-  let peerPublicKey = $state<string | null>(null)
-  let peerFoundDriveKey = $state<string | null>(null)
+  let peerPublicKey      = $state<string | null>(null)
+  let peerFoundDriveKey  = $state<string | null>(null)
+  let peerFoundContactKey = $state<string | null>(null)
   let findLoading = $state(false)
   let findError = $state<string | null>(null)
 
@@ -62,6 +66,7 @@
     peerProfile = null
     peerPublicKey = null
     peerFoundDriveKey = null
+    peerFoundContactKey = null
     findError = null
   }
 
@@ -70,27 +75,16 @@
     peerProfile = null
     findLoading = true
     try {
-      let parsedDriveKey: string
-      let parsedPublicKey: string | null = null
-
-      try {
-        const parsed = JSON.parse(peerInput.trim())
-        parsedDriveKey = parsed.driveKey
-        parsedPublicKey = parsed.publicKey ?? null
-      } catch {
-        findError = 'Invalid format. Paste the full contact key provided on the user page.'
-        return
-      }
-
-      if (!parsedDriveKey) {
-        findError = 'No drive key found in input. Paste the full contact key provided on the user page.'
+      const ck = peerInput.trim()
+      if (!ck) {
+        findError = 'Paste the contact key from the user\'s profile.'
         return
       }
 
       const resp = await fetch('/api/get-peer-profile', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ driveKey: parsedDriveKey })
+        body: JSON.stringify({ contactKey: ck })
       })
 
       if (!resp.ok) {
@@ -99,9 +93,11 @@
         return
       }
 
-      peerProfile = await resp.json()
-      peerPublicKey = parsedPublicKey
-      peerFoundDriveKey = parsedDriveKey
+      const data = await resp.json()
+      peerProfile = data
+      peerPublicKey = null  // not needed separately — contactKey encodes it
+      peerFoundDriveKey = data.driveKey ?? null
+      peerFoundContactKey = ck
     } catch (e) {
       findError = e instanceof Error ? e.message : 'Unknown error'
     } finally {
@@ -111,18 +107,52 @@
 
   // NewDeal navigation state
   let previousView = $state<View>('identity')
-  let newDealCounterpartyKey = $state('')
+  let newDealCounterpartyKey   = $state('')
+  let newDealCounterpartyAlias = $state('')
 
-  function openNewDeal (from: View, cpKey = '') {
+  function openNewDeal (from: View, cpKey = '', cpAlias = '') {
     previousView = from
-    newDealCounterpartyKey = cpKey
+    newDealCounterpartyKey   = cpKey
+    newDealCounterpartyAlias = cpAlias
     view = 'newDeal'
   }
 
+  // DealView navigation state
+  let currentDeal = $state<any>(null)
+  let dealListRefreshKey = $state(0)
+
+  // Unread deal IDs — persisted in Hyperdrive, restored on startup
+  let unreadDealIds = $state(new Set<string>())
+
+  async function loadUnreadDeals () {
+    try {
+      const ids: string[] = await fetch('/api/get-unread-deals').then(r => r.json())
+      unreadDealIds = new Set(ids)
+    } catch {}
+  }
+
+  function openDealView (deal: any) {
+    currentDeal = deal
+    previousView = view
+    view = 'dealView'
+    // Mark as read: remove bell from card + persist to Hyperdrive
+    if (unreadDealIds.has(deal.id)) {
+      unreadDealIds.delete(deal.id)
+      unreadDealIds = new Set(unreadDealIds) // trigger reactivity
+      fetch('/api/mark-notification-read', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: deal.id })
+      }).catch(() => {})
+    }
+  }
+
   // Accordion open/close state
-  let profileOpen = $state(false)
-  let dealsOpen = $state(false)
-  let settingsOpen = $state(false)
+  let activeSection = $state<'profile' | 'deals' | 'settings' | null>(null)
+
+  function toggleSection (section: 'profile' | 'deals' | 'settings') {
+    activeSection = activeSection === section ? null : section
+  }
 
   // Delete identity: two-step confirmation
   let confirmDelete = $state(false)
@@ -192,6 +222,111 @@
     }
   }
 
+  // Toast notification
+  type ToastNotif = { dealId: string; message: string; visible: boolean }
+  let toast = $state<ToastNotif | null>(null)
+  let toastTimer: ReturnType<typeof setTimeout> | null = null
+  let toastFadeTimer: ReturnType<typeof setTimeout> | null = null
+
+  const NOTIF_LABELS: Record<string, string> = {
+    new_deal:           'incoming deal',
+    deal_response:      'counterparty responded',
+    deal_confirmed:     'deal confirmed',
+    deal_cancelled:     'deal cancelled',
+    deal_closed_partial:'counterparty closed their side',
+    deal_completed:     'deal completed',
+  }
+
+  function showToast (dealId: string, title: string, type: string) {
+    if (toastTimer)      clearTimeout(toastTimer)
+    if (toastFadeTimer)  clearTimeout(toastFadeTimer)
+
+    const label = NOTIF_LABELS[type] ?? type
+    toast = { dealId, message: `${title} — ${label}`, visible: true }
+
+    // After 5s start fade, then remove
+    toastTimer = setTimeout(() => {
+      if (toast) toast = { ...toast, visible: false }
+      toastFadeTimer = setTimeout(() => { toast = null }, 400)
+    }, 5000)
+  }
+
+  function dismissToast () {
+    if (toastTimer)     clearTimeout(toastTimer)
+    if (toastFadeTimer) clearTimeout(toastFadeTimer)
+    if (toast) toast = { ...toast, visible: false }
+    toastFadeTimer = setTimeout(() => { toast = null }, 400)
+  }
+
+  function playNotificationSound () {
+    try {
+      const ctx = new AudioContext()
+      const t = ctx.currentTime
+
+      function tap (startAt: number) {
+        const osc  = ctx.createOscillator()
+        const gain = ctx.createGain()
+        osc.connect(gain)
+        gain.connect(ctx.destination)
+        osc.type = 'sine'
+        osc.frequency.setValueAtTime(880, startAt)
+        gain.gain.setValueAtTime(0.12, startAt)
+        gain.gain.exponentialRampToValueAtTime(0.001, startAt + 0.08)
+        osc.start(startAt)
+        osc.stop(startAt + 0.08)
+      }
+
+      tap(t)
+      tap(t + 0.13)
+    } catch {}
+  }
+
+  async function pollNotifications () {
+    try {
+      const res = await fetch('/api/get-notifications')
+      if (!res.ok) return
+      const notifications: { type: string; dealId: string; title: string }[] = await res.json()
+      if (notifications.length === 0) return
+
+      playNotificationSound()
+      dealListRefreshKey++
+
+      // Add all incoming dealIds to unread set
+      for (const n of notifications) {
+        if (n.dealId) {
+          unreadDealIds.add(n.dealId)
+        }
+      }
+      unreadDealIds = new Set(unreadDealIds) // trigger reactivity
+
+      // If DealView is open, refresh the deal data immediately for any relevant notification
+      if (view === 'dealView' && currentDeal) {
+        const r = await fetch(`/api/get-deal?id=${currentDeal.id}`)
+        if (r.ok) {
+          const fresh = await r.json()
+          if (!fresh.error) currentDeal = fresh
+        }
+      }
+
+      // Show toast for the last notification — but skip if we're already viewing that deal
+      const last = notifications[notifications.length - 1]
+      const alreadyViewing = view === 'dealView' && currentDeal?.id === last.dealId
+      if (!alreadyViewing) {
+        showToast(last.dealId, last.title, last.type)
+      }
+    } catch {}
+  }
+
+  // Start polling as soon as identity is ready, keep running across ALL views.
+  // Stopping on non-identity views caused notifications to be missed in DealView.
+  $effect(() => {
+    if (publicKey) {
+      loadUnreadDeals()
+      const interval = setInterval(pollNotifications, 10_000)
+      return () => clearInterval(interval)
+    }
+  })
+
   // Saves currency immediately when user changes the select in Settings
   let currencySaved = $state(false)
 
@@ -228,19 +363,20 @@
       if (data.status === 'pending') {
         view = 'welcome'
       } else {
-        await showIdentity(data.publicKey, data.driveKey)
+        await showIdentity(data.publicKey, data.driveKey, data.contactKey ?? null)
       }
     } catch (e) {
       error = e instanceof Error ? e.message : 'Unknown error'
     }
   })
 
-  // Renders the identity screen for a given public key + drive key
-  async function showIdentity (pubKey: string, dKey: string) {
-    publicKey = pubKey
-    driveKey = dKey
-    // QR encodes both keys so anyone scanning can look up our Hyperdrive
-    const qrPayload = JSON.stringify({ publicKey: pubKey, driveKey: dKey })
+  // Renders the identity screen for a given public key + drive key + contact key
+  async function showIdentity (pubKey: string, dKey: string, ck: string | null) {
+    publicKey  = pubKey
+    driveKey   = dKey
+    contactKey = ck
+    // QR encodes the compact contact key — one string contains all three keys
+    const qrPayload = ck ?? JSON.stringify({ publicKey: pubKey, driveKey: dKey })
     qrDataUrl = await QRCode.toDataURL(qrPayload, {
       width: 200,
       margin: 1,
@@ -256,8 +392,8 @@
     try {
       const resp = await fetch('/api/create-identity')
       if (!resp.ok) throw new Error('Bare API returned ' + resp.status)
-      const { publicKey: pubKey, driveKey: dKey } = await resp.json()
-      await showIdentity(pubKey, dKey)
+      const { publicKey: pubKey, driveKey: dKey, contactKey: ck } = await resp.json()
+      await showIdentity(pubKey, dKey, ck ?? null)
     } catch (e) {
       error = e instanceof Error ? e.message : 'Unknown error'
       view = 'welcome'
@@ -272,8 +408,7 @@
       publicKey = null
       qrDataUrl = null
       confirmDelete = false
-      settingsOpen = false
-      profileOpen = false
+      activeSection = null
       resetProfileState()
       view = 'welcome'
     } catch (e) {
@@ -289,6 +424,7 @@
     <button class="tl-btn tl-minimize" onclick={() => Pear.Window.self.minimize()} title="Minimize"></button>
     <button class="tl-btn tl-zoom"     title="Fullscreen" disabled></button>
   </div>
+
 </div>
 
 <main>
@@ -324,6 +460,42 @@
     <div class="card muted">Generating your identity...</div>
 
   {:else if view === 'identity'}
+    <div class="identity-card-wrap">
+
+    <!-- Toast notification — top-right, auto-dismisses after 5s -->
+    {#if toast}
+      <div
+        class="toast"
+        class:toast-visible={toast.visible}
+        role="button"
+        tabindex="0"
+        onclick={() => {
+          dismissToast()
+          const dealId = toast?.dealId
+          if (dealId) {
+            fetch(`/api/get-deal?id=${dealId}`).then(r => r.json()).then(deal => {
+              if (!deal.error) openDealView(deal)
+            }).catch(() => {})
+          }
+        }}
+        onkeydown={(e) => e.key === 'Enter' && (() => {
+          dismissToast()
+          const dealId = toast?.dealId
+          if (dealId) {
+            fetch(`/api/get-deal?id=${dealId}`).then(r => r.json()).then(deal => {
+              if (!deal.error) openDealView(deal)
+            }).catch(() => {})
+          }
+        })()}
+      >
+        <svg class="toast-icon" viewBox="0 0 20 20" fill="currentColor">
+          <path d="M10 2a6 6 0 00-6 6v2.586l-.707.707A1 1 0 004 13h12a1 1 0 00.707-1.707L16 10.586V8a6 6 0 00-6-6zM10 18a3 3 0 01-2.83-2h5.66A3 3 0 0110 18z"/>
+        </svg>
+        <span class="toast-message">{toast.message}</span>
+        <button class="toast-close" onclick={(e) => { e.stopPropagation(); dismissToast() }}>✕</button>
+      </div>
+    {/if}
+
     <div class="identity-card">
 
       <!-- Header: avatar + name/key left, share button right -->
@@ -383,6 +555,7 @@
       </div>
 
     </div>
+    </div><!-- end identity-card-wrap -->
 
     <div class="action-bar">
       <button class="find-user-btn" onclick={() => { peerInput = ''; peerProfile = null; peerPublicKey = null; peerFoundDriveKey = null; findError = null; view = 'findUser' }}>
@@ -399,14 +572,14 @@
 
         <!-- My Profile -->
         <div class="section">
-          <button class="section-header" onclick={() => profileOpen = !profileOpen}>
-            <svg class="chevron" class:open={profileOpen} viewBox="0 0 16 16" fill="none">
+          <button class="section-header" onclick={() => toggleSection('profile')}>
+            <svg class="chevron" class:open={activeSection === 'profile'} viewBox="0 0 16 16" fill="none">
               <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5"
                 stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
             <span>My Profile</span>
           </button>
-          {#if profileOpen}
+          {#if activeSection === 'profile'}
             <div class="section-body">
               {#if !profileEditing}
                 <!-- VIEW MODE -->
@@ -498,35 +671,36 @@
 
         <!-- Deals -->
         <div class="section">
-          <button class="section-header" onclick={() => dealsOpen = !dealsOpen}>
-            <svg class="chevron" class:open={dealsOpen} viewBox="0 0 16 16" fill="none">
+          <button class="section-header" onclick={() => toggleSection('deals')}>
+            <svg class="chevron" class:open={activeSection === 'deals'} viewBox="0 0 16 16" fill="none">
               <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5"
                 stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
             <span>Deals</span>
           </button>
-          {#if dealsOpen}
+          {#if activeSection === 'deals'}
             <div class="section-body">
-              <div class="muted" style="font-size: 13px; margin-bottom: 12px;">
-                Deal history coming soon.
-              </div>
-              <button class="new-deal-btn" onclick={() => openNewDeal('identity')}>
-                + New Deal
-              </button>
+              <DealList
+                myPublicKey={publicKey ?? ''}
+                onNewDeal={() => openNewDeal('identity')}
+                onViewDeal={openDealView}
+                refreshKey={dealListRefreshKey}
+                unreadDealIds={unreadDealIds}
+              />
             </div>
           {/if}
         </div>
 
         <!-- Settings -->
         <div class="section">
-          <button class="section-header" onclick={() => settingsOpen = !settingsOpen}>
-            <svg class="chevron" class:open={settingsOpen} viewBox="0 0 16 16" fill="none">
+          <button class="section-header" onclick={() => toggleSection('settings')}>
+            <svg class="chevron" class:open={activeSection === 'settings'} viewBox="0 0 16 16" fill="none">
               <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5"
                 stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
             <span>Settings</span>
           </button>
-          {#if settingsOpen}
+          {#if activeSection === 'settings'}
             <div class="section-body">
               <!-- Display currency -->
               <div class="setting-row">
@@ -628,12 +802,29 @@
         </div>
       </div>
 
+      <button
+        class="new-deal-from-profile-btn"
+        onclick={() => openNewDeal('peerProfile', peerFoundContactKey ?? '', peerProfile?.name || '')}
+        disabled={!peerFoundContactKey}
+      >
+        + New Deal with {peerProfile?.name || 'this user'}
+      </button>
+
     </div>
+
+  {:else if view === 'dealView' && currentDeal}
+    <DealView
+      deal={currentDeal}
+      myPublicKey={publicKey ?? ''}
+      onBack={() => view = previousView}
+    />
 
   {:else if view === 'newDeal'}
     <NewDeal
       counterpartyKey={newDealCounterpartyKey}
+      counterpartyAlias={newDealCounterpartyAlias}
       onBack={() => view = previousView}
+      onSuccess={() => view = 'identity'}
     />
 
   {:else if view === 'findUser'}
@@ -747,4 +938,68 @@
     font-family: 'gothampro', system-ui, sans-serif;
     text-align: center;
   }
+
+  /* ─── Toast notification ─────────────────────────────────── */
+
+  .toast {
+    position: fixed;
+    top: 48px; /* below titlebar */
+    right: 12px;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    max-width: 300px;
+    padding: 12px 14px;
+    background: rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(28px) saturate(180%);
+    -webkit-backdrop-filter: blur(28px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 16px;
+    box-shadow:
+      0 8px 32px rgba(0, 0, 0, 0.45),
+      0 0 18px rgba(100, 180, 255, 0.1),
+      inset 0 1px 0 rgba(255, 255, 255, 0.18),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.15);
+    cursor: pointer;
+    opacity: 0;
+    transform: translateX(16px);
+    transition: opacity 0.3s ease, transform 0.3s ease;
+    pointer-events: none;
+  }
+
+  .toast.toast-visible {
+    opacity: 1;
+    transform: translateX(0);
+    pointer-events: auto;
+  }
+
+  .toast-icon {
+    width: 15px;
+    height: 15px;
+    color: #93d2ff;
+    flex-shrink: 0;
+    filter: drop-shadow(0 0 4px rgba(147, 210, 255, 0.5));
+  }
+
+  .toast-message {
+    font-size: 12px;
+    color: #e2e8f0;
+    line-height: 1.45;
+    flex: 1;
+    text-align: left;
+  }
+
+  .toast-close {
+    background: none;
+    border: none;
+    color: rgba(255, 255, 255, 0.3);
+    font-size: 11px;
+    cursor: pointer;
+    padding: 0;
+    font-family: inherit;
+    flex-shrink: 0;
+    transition: color 0.15s;
+  }
+  .toast-close:hover { color: rgba(255, 255, 255, 0.7); }
 </style>

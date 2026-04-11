@@ -5,15 +5,20 @@
 
   let {
     counterpartyKey = '',
-    onBack
+    counterpartyAlias = '',
+    onBack,
+    onSuccess
   } = $props<{
     counterpartyKey?: string
+    counterpartyAlias?: string
     onBack: () => void
+    onSuccess?: () => void
   }>()
 
   // untrack: we intentionally capture only the initial prop value.
   // The component is recreated on every navigation, so this is correct.
-  const initialKey = untrack(() => counterpartyKey)
+  const initialKey   = untrack(() => counterpartyKey)
+  const initialAlias = untrack(() => counterpartyAlias)
 
   // Form fields
   let title      = $state('')
@@ -26,6 +31,7 @@
   // Submission state
   let loading    = $state(false)
   let error      = $state<string | null>(null)
+  let createdId  = $state<string | null>(null)  // set after successful creation
 
   const isKeyReadonly = initialKey.length > 0
 
@@ -37,22 +43,16 @@
     { value: 'escrow',    label: 'Escrow',    desc: '1.0× — coming soon', disabled: true }
   ]
 
-  // Accepts either a raw hex public key or a contact JSON { publicKey, driveKey }
-  function parseCounterpartyKey (input: string): string | null {
+  // Validates that the input looks like a contact key (base58, ~130 chars)
+  function isValidContactKey (input: string): boolean {
     const trimmed = input.trim()
-    try {
-      const parsed = JSON.parse(trimmed)
-      return parsed.publicKey ?? null
-    } catch {
-      // Not JSON — treat as raw hex key
-      return trimmed.length > 0 ? trimmed : null
-    }
+    return trimmed.length >= 120 && trimmed.length <= 145 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(trimmed)
   }
 
   function validate (): string | null {
-    if (!title.trim())                return 'Deal title is required'
-    if (!parseCounterpartyKey(cpKey)) return 'Counterparty key is required'
-    if (!terms.trim())                return 'Your terms are required'
+    if (!title.trim())              return 'Deal title is required'
+    if (!isValidContactKey(cpKey))  return 'Paste the contact key from the counterparty\'s profile'
+    if (!terms.trim())              return 'Your terms are required'
     const amt = parseFloat(amount)
     if (!amount || isNaN(amt) || amt <= 0) return 'Enter a valid amount'
     return null
@@ -71,10 +71,11 @@
 
       const now = Math.floor(Date.now() / 1000)
       const deal = {
-        title:             title.trim(),
-        initiator_terms:   terms.trim(),
-        counterparty_key:  parseCounterpartyKey(cpKey)!,
-        original_amount:   parseFloat(amount),
+        title:              title.trim(),
+        initiator_terms:    terms.trim(),
+        contactKey:         cpKey.trim(),
+        counterparty_alias: initialAlias || null,
+        original_amount: parseFloat(amount),
         original_currency: currency.toLowerCase(),
         amount_usd:        rates.amount_usd,
         amount_rub:        rates.amount_rub,
@@ -87,11 +88,15 @@
         expires_at:        now + 86400
       }
 
-      // Transport not yet implemented — log for now
-      console.log('[NewDeal] deal object ready:', deal)
+      const res = await fetch('/api/create-deal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(deal)
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to create deal')
 
-      // TODO: POST to /api/create-deal in next step
-      alert('Deal object created — check console. Transport coming next.')
+      createdId = data.id
 
     } catch (e) {
       error = e instanceof Error ? e.message : 'Unknown error'
@@ -103,6 +108,17 @@
 
 <div class="new-deal-screen">
   <button class="back-btn" onclick={onBack}>← Back</button>
+
+  {#if createdId}
+    <div class="success-screen">
+      <div class="success-icon">✓</div>
+      <div class="success-title">Deal Initiated</div>
+      <div class="success-id">{createdId.slice(0, 16)}…</div>
+      <div class="success-sub">Waiting for counterparty to respond</div>
+      <button class="submit-btn" onclick={onSuccess ?? onBack}>Back to Home</button>
+    </div>
+  {:else}
+
   <div class="screen-header">
     <h2 class="screen-title">New Deal</h2>
     <div class="status-badge">Initializing...</div>
@@ -206,12 +222,24 @@
     </button>
 
   </div>
+  {/if}
 </div>
 
 <style>
   .new-deal-screen {
-    padding: 16px;
+    display: flex;
+    flex-direction: column;
     text-align: left;
+    background: rgba(255, 255, 255, 0.07);
+    backdrop-filter: blur(28px) saturate(180%);
+    -webkit-backdrop-filter: blur(28px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    border-radius: 20px;
+    padding: 1.5rem;
+    box-shadow:
+      0 8px 32px rgba(0, 0, 0, 0.4),
+      inset 0 1px 0 rgba(255, 255, 255, 0.2),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.15);
   }
 
   .screen-header {
@@ -225,19 +253,20 @@
     font-size: 18px;
     font-weight: 600;
     margin: 0;
-    color: #e2e8f0;
+    color: #f0f4f8;
     text-align: left;
   }
 
   .status-badge {
-    background: rgba(147,210,255,0.12);
-    border: 1px solid rgba(147,210,255,0.3);
+    background: rgba(147,210,255,0.1);
+    border: 1px solid rgba(147,210,255,0.4);
     border-radius: 20px;
     color: #93d2ff;
     font-size: 11px;
     font-weight: 600;
     letter-spacing: 0.04em;
     padding: 5px 12px;
+    box-shadow: 0 0 10px rgba(100,180,255,0.3);
   }
 
   .form {
@@ -258,14 +287,14 @@
     font-weight: 600;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: #7a8599;
+    color: #64748b;
   }
 
   .field-input {
     background: rgba(255,255,255,0.05);
     border: 1px solid rgba(255,255,255,0.1);
     border-radius: 8px;
-    color: #e2e8f0;
+    color: #f0f4f8;
     font-family: inherit;
     font-size: 14px;
     padding: 10px 12px;
@@ -288,7 +317,7 @@
     background: rgba(255,255,255,0.03);
     border: 1px solid rgba(255,255,255,0.07);
     border-radius: 8px;
-    color: #e2e8f0;
+    color: #f0f4f8;
     font-size: 13px;
     padding: 10px 12px;
     word-break: break-all;
@@ -296,7 +325,7 @@
   }
 
   .field-readonly-muted {
-    color: #4a5568;
+    color: #64748b;
     font-style: italic;
   }
 
@@ -340,7 +369,7 @@
   .level-btn:hover:not(:disabled) {
     background: rgba(147,210,255,0.07);
     border-color: rgba(147,210,255,0.25);
-    color: #e2e8f0;
+    color: #f0f4f8;
   }
 
   .level-btn.active {
@@ -368,7 +397,7 @@
     background: rgba(255, 80, 80, 0.1);
     border: 1px solid rgba(255, 80, 80, 0.25);
     border-radius: 8px;
-    color: #fc8181;
+    color: #f87171;
     font-size: 13px;
     padding: 10px 12px;
     text-align: left;
@@ -380,9 +409,9 @@
     border-radius: 14px;
     color: #93d2ff;
     font-family: inherit;
-    font-size: 14px;
+    font-size: 0.88rem;
     font-weight: 600;
-    padding: 12px;
+    padding: 0.55rem 1rem;
     cursor: pointer;
     box-shadow: 0 0 14px rgba(100, 180, 255, 0.22);
     transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
@@ -404,7 +433,7 @@
   .back-btn {
     background: none;
     border: none;
-    color: #7a8599;
+    color: #64748b;
     font-family: inherit;
     font-size: 13px;
     cursor: pointer;
@@ -414,6 +443,45 @@
   }
 
   .back-btn:hover {
-    color: #e2e8f0;
+    color: #f0f4f8;
+  }
+
+  .success-screen {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding: 40px 16px;
+    text-align: center;
+  }
+
+  .success-icon {
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    background: rgba(147, 210, 255, 0.1);
+    border: 1px solid rgba(147, 210, 255, 0.3);
+    color: #93d2ff;
+    font-size: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .success-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: #f0f4f8;
+  }
+
+  .success-sub {
+    font-size: 13px;
+    color: #94a3b8;
+  }
+
+  .success-id {
+    font-size: 11px;
+    color: #64748b;
+    font-family: monospace;
   }
 </style>
