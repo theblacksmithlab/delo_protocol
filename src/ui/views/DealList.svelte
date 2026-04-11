@@ -4,6 +4,8 @@
     title: string
     initiator_key: string
     counterparty_key: string
+    initiator_alias: string | null
+    counterparty_alias: string | null
     original_amount: number
     original_currency: string
     level: string
@@ -55,6 +57,14 @@
 
   function shortKey (hex: string): string {
     return '0x' + hex.slice(0, 4) + '...' + hex.slice(-4)
+  }
+
+  function counterpartyDisplay (deal: Deal): string {
+    if (isOutgoing(deal)) {
+      return deal.counterparty_alias || shortKey(deal.counterparty_key)
+    } else {
+      return deal.initiator_alias || shortKey(deal.initiator_key)
+    }
   }
 
   function formatAmount (deal: Deal): string {
@@ -165,7 +175,7 @@
           <div class="deal-title">{deal.title}</div>
           <div class="deal-id">{shortKey(deal.id)}</div>
           <div class="deal-counterparty">
-            with {shortKey(isOutgoing(deal) ? deal.counterparty_key : deal.initiator_key)}
+            with {counterpartyDisplay(deal)}
           </div>
 
           <!-- Bottom row: amount + countdown timer -->
@@ -289,7 +299,7 @@
   .deal-counterparty {
     font-size: 11px;
     color: #64748b;
-    margin-top: 4px;
+    margin-top: 8px;
   }
 
   /* Deal ID — mirrors .id-key, most muted */

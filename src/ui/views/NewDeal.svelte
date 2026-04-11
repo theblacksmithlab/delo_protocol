@@ -5,17 +5,20 @@
 
   let {
     counterpartyKey = '',
+    counterpartyAlias = '',
     onBack,
     onSuccess
   } = $props<{
     counterpartyKey?: string
+    counterpartyAlias?: string
     onBack: () => void
     onSuccess?: () => void
   }>()
 
   // untrack: we intentionally capture only the initial prop value.
   // The component is recreated on every navigation, so this is correct.
-  const initialKey = untrack(() => counterpartyKey)
+  const initialKey   = untrack(() => counterpartyKey)
+  const initialAlias = untrack(() => counterpartyAlias)
 
   // Form fields
   let title      = $state('')
@@ -68,9 +71,10 @@
 
       const now = Math.floor(Date.now() / 1000)
       const deal = {
-        title:           title.trim(),
-        initiator_terms: terms.trim(),
-        contactKey:      cpKey.trim(),
+        title:              title.trim(),
+        initiator_terms:    terms.trim(),
+        contactKey:         cpKey.trim(),
+        counterparty_alias: initialAlias || null,
         original_amount: parseFloat(amount),
         original_currency: currency.toLowerCase(),
         amount_usd:        rates.amount_usd,

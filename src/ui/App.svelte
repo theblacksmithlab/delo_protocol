@@ -107,11 +107,13 @@
 
   // NewDeal navigation state
   let previousView = $state<View>('identity')
-  let newDealCounterpartyKey = $state('')
+  let newDealCounterpartyKey   = $state('')
+  let newDealCounterpartyAlias = $state('')
 
-  function openNewDeal (from: View, cpKey = '') {
+  function openNewDeal (from: View, cpKey = '', cpAlias = '') {
     previousView = from
-    newDealCounterpartyKey = cpKey
+    newDealCounterpartyKey   = cpKey
+    newDealCounterpartyAlias = cpAlias
     view = 'newDeal'
   }
 
@@ -146,9 +148,11 @@
   }
 
   // Accordion open/close state
-  let profileOpen = $state(false)
-  let dealsOpen = $state(false)
-  let settingsOpen = $state(false)
+  let activeSection = $state<'profile' | 'deals' | 'settings' | null>(null)
+
+  function toggleSection (section: 'profile' | 'deals' | 'settings') {
+    activeSection = activeSection === section ? null : section
+  }
 
   // Delete identity: two-step confirmation
   let confirmDelete = $state(false)
@@ -404,8 +408,7 @@
       publicKey = null
       qrDataUrl = null
       confirmDelete = false
-      settingsOpen = false
-      profileOpen = false
+      activeSection = null
       resetProfileState()
       view = 'welcome'
     } catch (e) {
@@ -569,14 +572,14 @@
 
         <!-- My Profile -->
         <div class="section">
-          <button class="section-header" onclick={() => profileOpen = !profileOpen}>
-            <svg class="chevron" class:open={profileOpen} viewBox="0 0 16 16" fill="none">
+          <button class="section-header" onclick={() => toggleSection('profile')}>
+            <svg class="chevron" class:open={activeSection === 'profile'} viewBox="0 0 16 16" fill="none">
               <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5"
                 stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
             <span>My Profile</span>
           </button>
-          {#if profileOpen}
+          {#if activeSection === 'profile'}
             <div class="section-body">
               {#if !profileEditing}
                 <!-- VIEW MODE -->
@@ -668,14 +671,14 @@
 
         <!-- Deals -->
         <div class="section">
-          <button class="section-header" onclick={() => dealsOpen = !dealsOpen}>
-            <svg class="chevron" class:open={dealsOpen} viewBox="0 0 16 16" fill="none">
+          <button class="section-header" onclick={() => toggleSection('deals')}>
+            <svg class="chevron" class:open={activeSection === 'deals'} viewBox="0 0 16 16" fill="none">
               <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5"
                 stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
             <span>Deals</span>
           </button>
-          {#if dealsOpen}
+          {#if activeSection === 'deals'}
             <div class="section-body">
               <DealList
                 myPublicKey={publicKey ?? ''}
@@ -690,14 +693,14 @@
 
         <!-- Settings -->
         <div class="section">
-          <button class="section-header" onclick={() => settingsOpen = !settingsOpen}>
-            <svg class="chevron" class:open={settingsOpen} viewBox="0 0 16 16" fill="none">
+          <button class="section-header" onclick={() => toggleSection('settings')}>
+            <svg class="chevron" class:open={activeSection === 'settings'} viewBox="0 0 16 16" fill="none">
               <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5"
                 stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
             <span>Settings</span>
           </button>
-          {#if settingsOpen}
+          {#if activeSection === 'settings'}
             <div class="section-body">
               <!-- Display currency -->
               <div class="setting-row">
@@ -801,7 +804,7 @@
 
       <button
         class="new-deal-from-profile-btn"
-        onclick={() => openNewDeal('peerProfile', peerFoundContactKey ?? '')}
+        onclick={() => openNewDeal('peerProfile', peerFoundContactKey ?? '', peerProfile?.name || '')}
         disabled={!peerFoundContactKey}
       >
         + New Deal with {peerProfile?.name || 'this user'}
@@ -819,6 +822,7 @@
   {:else if view === 'newDeal'}
     <NewDeal
       counterpartyKey={newDealCounterpartyKey}
+      counterpartyAlias={newDealCounterpartyAlias}
       onBack={() => view = previousView}
       onSuccess={() => view = 'identity'}
     />

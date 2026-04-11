@@ -1141,12 +1141,24 @@ bridge.server.on('request', async (req, res) => {
       const idBytes = crypto.randomBytes(32)
       const id = b4a.toString(idBytes, 'hex')
 
+      // Read own name to store as initiator_alias — fire-and-forget, null if unavailable
+      let initiatorAlias = null
+      try {
+        const profileBuf = await drive.get('/profile.json').catch(() => null)
+        if (profileBuf) {
+          const profile = JSON.parse(b4a.toString(profileBuf))
+          initiatorAlias = profile.name || null
+        }
+      } catch {}
+
       const deal = {
         id,
         initiator_key:       b4a.toString(keypairData.publicKey, 'hex'),
         initiator_drive_key: b4a.toString(drive.key, 'hex'),
+        initiator_alias:     initiatorAlias,
         counterparty_key:       cpPublicKey,
         counterparty_drive_key: cpDriveKey,
+        counterparty_alias:     incoming.counterparty_alias || null,
         timestamp:          incoming.timestamp,
         expires_at:         incoming.expires_at,
         original_amount:    incoming.original_amount,
