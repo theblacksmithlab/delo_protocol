@@ -15,7 +15,6 @@
 
   let view = $state<View>('loading')
   let publicKey  = $state<string | null>(null)
-  let driveKey   = $state<string | null>(null)
   let contactKey = $state<string | null>(null)
   let qrDataUrl  = $state<string | null>(null)
   let error = $state<string | null>(null)
@@ -57,11 +56,19 @@
 
   let peerInput = $state('')
   let peerProfile = $state<{ name: string, bio: string, hasAvatar: boolean, memberSince: string | null } | null>(null)
-  let peerPublicKey      = $state<string | null>(null)
-  let peerFoundDriveKey  = $state<string | null>(null)
+  let peerPublicKey       = $state<string | null>(null)
+  let peerFoundDriveKey   = $state<string | null>(null)
   let peerFoundContactKey = $state<string | null>(null)
+  let peerDealLogKey      = $state<string | null>(null)
+  let peerFromCache       = $state(false)
   let findLoading = $state(false)
   let findError = $state<string | null>(null)
+
+  // Peer reputation — loaded after findPeer() succeeds
+  let peerReputation        = $state<ReputationStats | null>(null)
+  let peerReputationLoading = $state(false)
+  let peerReputationFailed  = $state(false)   // true only on timeout/error (vs. no deals)
+  let peerDeals             = $state<any[]>([])  // cached raw deals for currency recalculation
 
   let peerShortKey = $derived(
     peerPublicKey
@@ -76,6 +83,11 @@
     peerPublicKey = null
     peerFoundDriveKey = null
     peerFoundContactKey = null
+    peerDealLogKey = null
+    peerFromCache = false
+    peerReputation = null
+    peerReputationFailed = false
+    peerDeals = []
     findError = null
   }
 
@@ -104,15 +116,56 @@
 
       const data = await resp.json()
       peerProfile = data
-      peerPublicKey = null  // not needed separately — contactKey encodes it
-      peerFoundDriveKey = data.driveKey ?? null
+      peerPublicKey       = data.publicKey   ?? null
+      peerFoundDriveKey   = data.driveKey    ?? null
       peerFoundContactKey = ck
+      peerDealLogKey      = data.dealLogKey  ?? null
+      peerFromCache       = data.fromCache   ?? false
+
+      // Start loading reputation in background — runs while user reviews the result
+      if (peerPublicKey && peerDealLogKey) void loadPeerReputation()
     } catch (e) {
       findError = e instanceof Error ? e.message : 'Unknown error'
     } finally {
       findLoading = false
     }
   }
+
+  async function loadPeerReputation () {
+    if (!peerPublicKey || !peerDealLogKey || !wasmReady) { peerReputation = null; return }
+    peerReputationLoading = true
+    peerReputation = null
+    peerReputationFailed = false
+    peerDeals = []
+    try {
+      const resp = await fetch('/api/get-peer-deal-log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dealLogKey: peerDealLogKey, publicKey: peerPublicKey })
+      })
+      const data = await resp.json()
+      // Non-array response means timeout or server error — show "Unavailable"
+      if (!Array.isArray(data)) { peerReputationFailed = true; return }
+      // Empty array is valid — peer has no completed deals yet, show $0
+      if (data.length === 0) return
+      peerDeals = data
+      const result = calculate_reputation(JSON.stringify(data), peerPublicKey, profile.currency.toLowerCase())
+      peerReputation = result ?? null
+    } catch {
+      peerReputationFailed = true
+    } finally {
+      peerReputationLoading = false
+    }
+  }
+
+  // Recalculate peer reputation when display currency changes (no extra network call)
+  $effect(() => {
+    void profile.currency
+    if (wasmReady && peerDeals.length > 0 && peerPublicKey) {
+      const result = calculate_reputation(JSON.stringify(peerDeals), peerPublicKey, profile.currency.toLowerCase())
+      peerReputation = result ?? null
+    }
+  })
 
   // NewDeal navigation state
   let previousView = $state<View>('identity')
@@ -182,10 +235,50 @@
     positive_volume: number
     negative_volume: number
     success_rate: number | null
+    sentiment: number          // 0.0 = red, 0.5 = neutral/white, 1.0 = green
     deal_count: number
     positive_count: number
     neutral_count: number
     negative_count: number
+  }
+
+  // Shared sentiment color stops.
+  const SENTIMENT_NEUTRAL: [number, number, number] = [240, 244, 248]  // #f0f4f8
+  const SENTIMENT_RED:     [number, number, number] = [248, 113, 113]  // #f87171
+  const SENTIMENT_BLUE:    [number, number, number] = [147, 210, 255]  // brand ice blue
+
+  function sentimentRGB (s: number): [number, number, number] {
+    if (s <= 0.5) {
+      const t = s * 2
+      return [
+        Math.round(SENTIMENT_RED[0] + t * (SENTIMENT_NEUTRAL[0] - SENTIMENT_RED[0])),
+        Math.round(SENTIMENT_RED[1] + t * (SENTIMENT_NEUTRAL[1] - SENTIMENT_RED[1])),
+        Math.round(SENTIMENT_RED[2] + t * (SENTIMENT_NEUTRAL[2] - SENTIMENT_RED[2])),
+      ]
+    } else {
+      const t = (s - 0.5) * 2
+      return [
+        Math.round(SENTIMENT_NEUTRAL[0] + t * (SENTIMENT_BLUE[0] - SENTIMENT_NEUTRAL[0])),
+        Math.round(SENTIMENT_NEUTRAL[1] + t * (SENTIMENT_BLUE[1] - SENTIMENT_NEUTRAL[1])),
+        Math.round(SENTIMENT_NEUTRAL[2] + t * (SENTIMENT_BLUE[2] - SENTIMENT_NEUTRAL[2])),
+      ]
+    }
+  }
+
+  // Returns CSS color string for the trust volume number.
+  function sentimentColor (s: number): string {
+    const [r, g, b] = sentimentRGB(s)
+    return `rgb(${r}, ${g}, ${b})`
+  }
+
+  // Returns text-shadow glow matching the sentiment color.
+  // Intensity scales with distance from neutral (0.5) — no glow at neutral, max at extremes.
+  function sentimentGlow (s: number): string {
+    const [r, g, b] = sentimentRGB(s)
+    const intensity = Math.abs(s - 0.5) * 2  // 0 at neutral, 1 at extremes
+    const a1 = (intensity * 0.55).toFixed(2)  // outer layer
+    const a2 = (intensity * 0.30).toFixed(2)  // inner tight layer
+    return `0 0 18px rgba(${r}, ${g}, ${b}, ${a1}), 0 0 7px rgba(${r}, ${g}, ${b}, ${a2})`
   }
   let reputation = $state<ReputationStats | null>(null)
   let wasmReady  = $state(false)
@@ -275,18 +368,18 @@
   }
 
   // Toast notification
-  type ToastNotif = { dealId: string; message: string; visible: boolean }
+  type ToastNotif = { dealId: string; title: string; label: string; visible: boolean }
   let toast = $state<ToastNotif | null>(null)
   let toastTimer: ReturnType<typeof setTimeout> | null = null
   let toastFadeTimer: ReturnType<typeof setTimeout> | null = null
 
   const NOTIF_LABELS: Record<string, string> = {
-    new_deal:           'incoming deal',
-    deal_response:      'counterparty responded',
-    deal_confirmed:     'deal confirmed',
-    deal_cancelled:     'deal cancelled',
-    deal_closed_partial:'counterparty closed their side',
-    deal_completed:     'deal completed',
+    new_deal:           'New incoming deal',
+    deal_response:      'Counterparty responded',
+    deal_confirmed:     'Deal confirmed',
+    deal_cancelled:     'Deal cancelled',
+    deal_closed_partial:'Counterparty closed their side',
+    deal_completed:     'Deal completed',
   }
 
   function showToast (dealId: string, title: string, type: string) {
@@ -294,13 +387,13 @@
     if (toastFadeTimer)  clearTimeout(toastFadeTimer)
 
     const label = NOTIF_LABELS[type] ?? type
-    toast = { dealId, message: `${title} — ${label}`, visible: true }
+    toast = { dealId, title, label, visible: true }
 
-    // After 5s start fade, then remove
+    // After 8s start fade, then remove
     toastTimer = setTimeout(() => {
       if (toast) toast = { ...toast, visible: false }
       toastFadeTimer = setTimeout(() => { toast = null }, 400)
-    }, 5000)
+    }, 8000)
   }
 
   function dismissToast () {
@@ -350,6 +443,9 @@
         }
       }
       unreadDealIds = new Set(unreadDealIds) // trigger reactivity
+
+      // Refresh reputation when a deal reaches completed state via peer's close
+      if (notifications.some(n => n.type === 'deal_completed')) void loadReputation()
 
       // If DealView is open, refresh the deal data immediately for any relevant notification
       if (view === 'dealView' && currentDeal) {
@@ -409,7 +505,7 @@
   onMount(async () => {
     try {
       const resp = await fetch('/api/get-identity')
-      if (!resp.ok) throw new Error('Failed to read identity')
+      if (!resp.ok) { error = 'Failed to read identity'; return }
       const data = await resp.json()
 
       if (data.status === 'pending') {
@@ -425,7 +521,6 @@
   // Renders the identity screen for a given public key + drive key + contact key
   async function showIdentity (pubKey: string, dKey: string, ck: string | null) {
     publicKey  = pubKey
-    driveKey   = dKey
     contactKey = ck
     // QR encodes the compact contact key — one string contains all three keys
     const qrPayload = ck ?? JSON.stringify({ publicKey: pubKey, driveKey: dKey })
@@ -443,7 +538,7 @@
     view = 'creating'
     try {
       const resp = await fetch('/api/create-identity')
-      if (!resp.ok) throw new Error('Bare API returned ' + resp.status)
+      if (!resp.ok) { error = 'Bare API returned ' + resp.status; view = 'welcome'; return }
       const { publicKey: pubKey, driveKey: dKey, contactKey: ck } = await resp.json()
       await showIdentity(pubKey, dKey, ck ?? null)
     } catch (e) {
@@ -456,7 +551,7 @@
   async function deleteIdentity () {
     try {
       const resp = await fetch('/api/delete-identity')
-      if (!resp.ok) throw new Error('Bare API returned ' + resp.status)
+      if (!resp.ok) { error = 'Bare API returned ' + resp.status; return }
       publicKey = null
       qrDataUrl = null
       confirmDelete = false
@@ -499,8 +594,8 @@
       </div>
       <h2>Your identity, your rules</h2>
       <p class="description">
-        Trust Protocol creates a cryptographic key on your device.
-        No accounts. No passwords. No servers.
+        Trust Protocol creates a cryptographic key on your device.<br><br>
+        No accounts. No passwords. No servers.<br><br>
         Your reputation belongs to you.
       </p>
       <button class="create-btn" onclick={createIdentity}>
@@ -540,11 +635,15 @@
           }
         })()}
       >
-        <svg class="toast-icon" viewBox="0 0 20 20" fill="currentColor">
-          <path d="M10 2a6 6 0 00-6 6v2.586l-.707.707A1 1 0 004 13h12a1 1 0 00.707-1.707L16 10.586V8a6 6 0 00-6-6zM10 18a3 3 0 01-2.83-2h5.66A3 3 0 0110 18z"/>
-        </svg>
-        <span class="toast-message">{toast.message}</span>
-        <button class="toast-close" onclick={(e) => { e.stopPropagation(); dismissToast() }}>✕</button>
+        <div class="toast-header">
+          <svg class="toast-icon" viewBox="0 0 20 20" fill="currentColor">
+            <path d="M10 2a6 6 0 00-6 6v2.586l-.707.707A1 1 0 004 13h12a1 1 0 00.707-1.707L16 10.586V8a6 6 0 00-6-6zM10 18a3 3 0 01-2.83-2h5.66A3 3 0 0110 18z"/>
+          </svg>
+          <span class="toast-header-label">New event</span>
+          <button class="toast-close" onclick={(e) => { e.stopPropagation(); dismissToast() }}>✕</button>
+        </div>
+        <div class="toast-deal-title">"{toast.title}"</div>
+        <div class="toast-event-label">{toast.label}</div>
       </div>
     {/if}
 
@@ -588,20 +687,22 @@
       <div class="trust-block">
         <div class="trust-label">TRUST VOLUME</div>
         {#if reputation && reputation.deal_count > 0}
-          <div class="trust-amount">{formatVolume(reputation.total_volume, profile.currency)}</div>
+          <div class="trust-amount" style="color: {sentimentColor(reputation.sentiment)}; text-shadow: {sentimentGlow(reputation.sentiment)}">{formatVolume(reputation.total_volume, profile.currency)}</div>
         {:else}
           <div class="trust-amount trust-amount-empty">{currencySymbol}0</div>
         {/if}
       </div>
 
-      <!-- Outcome bar: blue = positive volume, red = negative volume -->
-      {#if reputation && (reputation.positive_volume > 0 || reputation.negative_volume > 0)}
-        {@const total = reputation.positive_volume + reputation.negative_volume}
-        {@const posPercent = (reputation.positive_volume / total) * 100}
-        {@const negPercent = (reputation.negative_volume / total) * 100}
+      <!-- Outcome bar: count-based segments — positive / neutral / negative -->
+      {#if reputation && reputation.deal_count > 0}
+        {@const total = reputation.deal_count}
+        {@const posPercent = (reputation.positive_count / total) * 100}
+        {@const neuPercent = (reputation.neutral_count  / total) * 100}
+        {@const negPercent = (reputation.negative_count / total) * 100}
         <div class="outcome-bar">
-          <div class="outcome-bar-pos" style="width: {posPercent}%"></div>
-          <div class="outcome-bar-neg" style="width: {negPercent}%"></div>
+          {#if posPercent > 0}<div class="outcome-bar-pos" style="width: {posPercent}%"></div>{/if}
+          {#if neuPercent > 0}<div class="outcome-bar-neu" style="width: {neuPercent}%"></div>{/if}
+          {#if negPercent > 0}<div class="outcome-bar-neg" style="width: {negPercent}%"></div>{/if}
         </div>
       {:else}
         <div class="outcome-bar outcome-bar-empty"></div>
@@ -840,7 +941,12 @@
           {/if}
         </div>
         <div class="peer-profile-name-block">
-          <div class="peer-profile-name">{peerProfile?.name || 'Anonymous'}</div>
+          <div class="peer-profile-name-row">
+            <div class="peer-profile-name">{peerProfile?.name || 'Anonymous'}</div>
+            {#if peerFromCache}
+              <span class="cached-badge" title="Peer is offline — showing cached data">cached</span>
+            {/if}
+          </div>
           {#if peerShortKey}
             <div class="peer-key-short">{peerShortKey}</div>
           {/if}
@@ -856,20 +962,49 @@
         {/if}
       </div>
 
-      <!-- Trust block — populated in Step 7 when we read peer's Hypercore log -->
+      <!-- Trust volume -->
       <div class="trust-block trust-block-peer">
         <div class="trust-label">TRUST VOLUME</div>
-        <div class="trust-amount trust-amount-peer">{currencySymbol}0</div>
+        {#if peerReputationLoading}
+          <div class="trust-amount trust-amount-empty">Loading...</div>
+        {:else if peerReputation && peerReputation.deal_count > 0}
+          <div class="trust-amount" style="color: {sentimentColor(peerReputation.sentiment)}; text-shadow: {sentimentGlow(peerReputation.sentiment)}">{formatVolume(peerReputation.total_volume, profile.currency)}</div>
+        {:else if peerReputationFailed}
+          <div class="trust-amount trust-amount-empty">Unavailable</div>
+        {:else}
+          <div class="trust-amount trust-amount-empty">{currencySymbol}0</div>
+        {/if}
       </div>
+
+      <!-- Outcome bar: count-based segments — positive / neutral / negative -->
+      {#if peerReputation && peerReputation.deal_count > 0}
+        {@const total = peerReputation.deal_count}
+        {@const posPercent = (peerReputation.positive_count / total) * 100}
+        {@const neuPercent = (peerReputation.neutral_count  / total) * 100}
+        {@const negPercent = (peerReputation.negative_count / total) * 100}
+        <div class="outcome-bar">
+          {#if posPercent > 0}<div class="outcome-bar-pos" style="width: {posPercent}%"></div>{/if}
+          {#if neuPercent > 0}<div class="outcome-bar-neu" style="width: {neuPercent}%"></div>{/if}
+          {#if negPercent > 0}<div class="outcome-bar-neg" style="width: {negPercent}%"></div>{/if}
+        </div>
+      {:else}
+        <div class="outcome-bar outcome-bar-empty"></div>
+      {/if}
 
       <div class="stats-row">
         <div class="stat-cell">
-          <div class="stat-value">0</div>
+          <div class="stat-value">{peerReputation?.deal_count ?? 0}</div>
           <div class="stat-label">Deals</div>
         </div>
         <div class="stat-cell">
-          <div class="stat-value">0</div>
-          <div class="stat-label">Counterparties</div>
+          <div class="stat-value">
+            {#if peerReputation?.success_rate !== null && peerReputation?.success_rate !== undefined}
+              {peerReputation.success_rate.toFixed(0)}%
+            {:else}
+              —
+            {/if}
+          </div>
+          <div class="stat-label">Satisfied</div>
         </div>
         <div class="stat-cell">
           <div class="stat-value">{memberSinceDisplay(peerProfile?.memberSince ?? null)}</div>
@@ -892,6 +1027,7 @@
       deal={currentDeal}
       myPublicKey={publicKey ?? ''}
       onBack={() => view = previousView}
+      onDealCompleted={loadReputation}
     />
 
   {:else if view === 'newDeal'}
@@ -956,9 +1092,9 @@
     </div>
 
   {/if}
-</main>
 
-<footer class="app-footer">Trust Protocol · Decentralized reputation, owned by you.</footer>
+  <footer class="app-footer">Trust Protocol · Decentralized reputation, owned by you.</footer>
+</main>
 
 <!-- Share modal — overlay with QR + copy button -->
 {#if shareOpen}
@@ -1022,59 +1158,99 @@
     right: 12px;
     z-index: 1000;
     display: flex;
-    align-items: center;
-    gap: 10px;
-    max-width: 300px;
-    padding: 12px 14px;
-    background: rgba(255, 255, 255, 0.08);
-    backdrop-filter: blur(28px) saturate(180%);
-    -webkit-backdrop-filter: blur(28px) saturate(180%);
-    border: 1px solid rgba(255, 255, 255, 0.14);
-    border-radius: 16px;
+    flex-direction: column;
+    gap: 5px;
+    width: 248px;
+    padding: 10px 12px 12px;
+    background: rgba(10, 14, 22, 0.82);
+    backdrop-filter: blur(40px) saturate(140%);
+    -webkit-backdrop-filter: blur(40px) saturate(140%);
+    border: 1px solid rgba(147, 210, 255, 0.16);
+    border-radius: 14px;
     box-shadow:
-      0 8px 32px rgba(0, 0, 0, 0.45),
-      0 0 18px rgba(100, 180, 255, 0.1),
-      inset 0 1px 0 rgba(255, 255, 255, 0.18),
-      inset 0 -1px 0 rgba(0, 0, 0, 0.15);
+      0 2px 16px rgba(0, 0, 0, 0.5),
+      0 0 0 1px rgba(147, 210, 255, 0.04),
+      0 0 20px rgba(147, 210, 255, 0.06);
     cursor: pointer;
     opacity: 0;
-    transform: translateX(16px);
-    transition: opacity 0.3s ease, transform 0.3s ease;
+    transform: translateX(20px) scale(0.97);
+    transition: opacity 0.25s ease, transform 0.25s ease;
     pointer-events: none;
+  }
+
+  /* Accent line on the right edge */
+  .toast::before {
+    content: '';
+    position: absolute;
+    right: 0;
+    top: 14px;
+    bottom: 14px;
+    width: 2px;
+    background: linear-gradient(to bottom, #93d2ff, rgba(147, 210, 255, 0.3));
+    border-radius: 2px 0 0 2px;
   }
 
   .toast.toast-visible {
     opacity: 1;
-    transform: translateX(0);
+    transform: translateX(0) scale(1);
     pointer-events: auto;
   }
 
-  .toast-icon {
-    width: 15px;
-    height: 15px;
-    color: #93d2ff;
-    flex-shrink: 0;
-    filter: drop-shadow(0 0 4px rgba(147, 210, 255, 0.5));
+  /* Header row: bell + "New event" label + close */
+  .toast-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
   }
 
-  .toast-message {
-    font-size: 12px;
-    color: #e2e8f0;
-    line-height: 1.45;
+  .toast-icon {
+    width: 12px;
+    height: 12px;
+    color: #93d2ff;
+    flex-shrink: 0;
+    opacity: 0.75;
+  }
+
+  .toast-header-label {
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: rgba(147, 210, 255, 0.55);
     flex: 1;
-    text-align: left;
   }
 
   .toast-close {
     background: none;
     border: none;
-    color: rgba(255, 255, 255, 0.3);
+    color: rgba(255, 255, 255, 0.2);
     font-size: 11px;
     cursor: pointer;
     padding: 0;
     font-family: inherit;
     flex-shrink: 0;
+    line-height: 1;
     transition: color 0.15s;
   }
-  .toast-close:hover { color: rgba(255, 255, 255, 0.7); }
+  .toast-close:hover { color: rgba(255, 255, 255, 0.6); }
+
+  /* Deal title — quoted, slightly highlighted */
+  .toast-deal-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: #f0f6ff;
+    line-height: 1.3;
+    padding-left: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Event description — muted label below */
+  .toast-event-label {
+    font-size: 11px;
+    color: rgba(226, 232, 240, 0.5);
+    padding-left: 2px;
+    line-height: 1.3;
+  }
 </style>

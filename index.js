@@ -175,13 +175,20 @@ async function initDealLog () {
   console.log('[deal-log] ready, key:', b4a.toString(dealLogCore.key, 'hex').slice(0, 16) + '...', 'blocks:', dealLogCore.length)
 }
 
+// Guards against duplicate appends caused by concurrent processPeerOutbox calls.
+// peerDrive.db.core fires 'append' on any write — multiple events can overlap in the same tick.
+const appendedDealIds = new Set()
+
 async function appendToDealLog (deal) {
   if (!dealLogCore) return
+  if (appendedDealIds.has(deal.id)) return // already appended this session
+  appendedDealIds.add(deal.id)
   try {
     await dealLogCore.append(b4a.from(JSON.stringify(deal)))
     console.log('[deal-log] appended deal:', deal.id?.slice(0, 8), '— total blocks:', dealLogCore.length)
   } catch (e) {
     console.error('[deal-log] append failed:', String(e))
+    appendedDealIds.delete(deal.id) // allow retry on failure
   }
 }
 
@@ -1018,19 +1025,35 @@ bridge.server.on('request', async (req, res) => {
       avatarSwarm.join(peerDrive.discoveryKey, { server: false, client: true })
       avatarSwarm.flush().then(avatarDone, avatarDone)
 
+      let avatarTimedOut = false
       try {
         await Promise.race([
           peerDrive.db.core.update(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000))
+          new Promise((_, reject) => setTimeout(() => { avatarTimedOut = true; reject(new Error('timeout')) }, 7000))
         ])
-      } catch {
+      } catch (e) {
+        if (!avatarTimedOut) {
+          avatarSwarm.destroy()
+          res.statusCode = 404; return res.end()
+        }
+        // Peer offline — fall through and try local cache
+      } finally {
         avatarSwarm.destroy()
-        res.statusCode = 404; return res.end()
       }
 
-      const buf = await peerDrive.get('/avatar').finally(() => avatarSwarm.destroy())
+      // Read avatar — works from live connection or local cache
+      const buf = await Promise.race([
+        peerDrive.get('/avatar'),
+        new Promise(resolve => setTimeout(() => resolve(null), 800))
+      ]).catch(() => null)
+
       if (!buf) { res.statusCode = 404; return res.end() }
-      const profileBuf = await peerDrive.get('/profile.json')
+
+      const profileBuf = await Promise.race([
+        peerDrive.get('/profile.json'),
+        new Promise(resolve => setTimeout(() => resolve(null), 800))
+      ]).catch(() => null)
+
       const mime = profileBuf
         ? (JSON.parse(b4a.toString(profileBuf)).avatarMime || 'image/jpeg')
         : 'image/jpeg'
@@ -1059,7 +1082,7 @@ bridge.server.on('request', async (req, res) => {
       if (drive && b4a.toString(drive.key, 'hex') === peerDriveKey) {
         const buf = await drive.get('/profile.json')
         if (!buf) return json({ error: 'Profile not found' }, 404)
-        return json({ ...JSON.parse(b4a.toString(buf)), driveKey: peerDriveKey })
+        return json({ ...JSON.parse(b4a.toString(buf)), driveKey: peerDriveKey, publicKey: peerPublicKey, dealLogKey: peerDealLogKey })
       }
 
       // Cache drive instance (keeps Hypercore data between requests) but always
@@ -1083,21 +1106,99 @@ bridge.server.on('request', async (req, res) => {
       freshSwarm.flush().then(metaDone, metaDone)
 
       try {
-        // update() now waits for the remote core length to be known
-        // (blocked by findingPeers until flush() resolves or peer connects)
+        // 7s timeout — enough for DHT discovery. On timeout: fall back to local cache.
         await Promise.race([
           peerDrive.db.core.update(),
           new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Peer not reachable (timeout)')), 15000)
+            setTimeout(() => reject(new Error('timeout')), 7000)
           )
         ])
 
         const profileBuf = await peerDrive.get('/profile.json')
         if (!profileBuf) return json({ error: 'Profile not found' }, 404)
-        return json({ ...JSON.parse(b4a.toString(profileBuf)), driveKey: peerDriveKey })
+        return json({ ...JSON.parse(b4a.toString(profileBuf)), driveKey: peerDriveKey, publicKey: peerPublicKey, dealLogKey: peerDealLogKey })
+      } catch (e) {
+        if (e.message !== 'timeout') {
+          return json({ error: String(e) }, 500)
+        }
+
+        // Peer is offline — try local cache.
+        // drive.get() can serve blocks cached from a previous session.
+        // Use a short timeout: cached reads are instant; hanging means no cache.
+        const cachedBuf = await Promise.race([
+          peerDrive.get('/profile.json'),
+          new Promise(resolve => setTimeout(() => resolve(null), 800))
+        ]).catch(() => null)
+
+        if (cachedBuf) {
+          return json({ ...JSON.parse(b4a.toString(cachedBuf)), driveKey: peerDriveKey, publicKey: peerPublicKey, dealLogKey: peerDealLogKey, fromCache: true })
+        }
+
+        return json({ error: 'Peer not reachable' }, 503)
       } finally {
         freshSwarm.destroy()
       }
+    }
+
+    // --- Peer deal log: fetch -----------------------------------------
+    // POST /api/get-peer-deal-log { dealLogKey: hex, publicKey: hex }
+    // Opens the peer's remote Hypercore by dealLogKey, reads up to 1000 blocks.
+    // Returns JSON array of deal objects, or { error, partial: [] } on timeout.
+    if (url === '/api/get-peer-deal-log') {
+      const body = await readBody(req)
+      let parsed
+      try { parsed = JSON.parse(b4a.toString(body)) } catch { return json({ error: 'invalid body' }, 400) }
+
+      const { dealLogKey: peerLogKey } = parsed
+      if (!peerLogKey) return json({ error: 'dealLogKey required' }, 400)
+      if (!store) return json({ error: 'store not ready' }, 500)
+
+      const keyBuf = b4a.from(peerLogKey, 'hex')
+      const peerCore = store.get({ key: keyBuf })
+      await peerCore.ready()
+
+      // findingPeers() holds core.update() until DHT flush — same pattern as drive fetch
+      const freshSwarm = new Hyperswarm()
+      const coreDone = peerCore.findingPeers()
+
+      freshSwarm.on('connection', socket => store.replicate(socket))
+      freshSwarm.join(crypto.discoveryKey(peerCore.key), { server: false, client: true })
+      freshSwarm.flush().then(coreDone, coreDone)
+
+      let timedOut = false
+      try {
+        await Promise.race([
+          peerCore.update(),
+          new Promise((_, reject) =>
+            setTimeout(() => { timedOut = true; reject(new Error('timeout')) }, 15000)
+          )
+        ])
+      } catch (e) {
+        if (!timedOut) {
+          await freshSwarm.destroy()
+          return json({ error: String(e), partial: [] })
+        }
+        // On timeout: fall through — corestore may have cached blocks from a prior session
+      } finally {
+        freshSwarm.destroy().catch(() => {})
+      }
+
+      const MAX_BLOCKS = 1000
+      const total = Math.min(peerCore.length, MAX_BLOCKS)
+
+      if (total === 0) {
+        return timedOut
+          ? json({ error: 'timeout', partial: [] })
+          : json([])
+      }
+
+      const entries = []
+      for (let i = 0; i < total; i++) {
+        const buf = await peerCore.get(i).catch(() => null)
+        if (!buf) continue
+        try { entries.push(JSON.parse(b4a.toString(buf))) } catch {}
+      }
+      return json(entries)
     }
 
     // --- Exchange rates ------------------------------------------------
@@ -1221,8 +1322,7 @@ bridge.server.on('request', async (req, res) => {
       if (!buf) return json({ error: 'deal not found' }, 404)
 
       const deal = JSON.parse(b4a.toString(buf))
-      const newStatus = role === 'initiator' ? 'cancelled_by_initiator' : 'cancelled_by_counterparty'
-      deal.status = newStatus
+      deal.status = role === 'initiator' ? 'cancelled_by_initiator' : 'cancelled_by_counterparty'
       await drive.put(`/history/deals/${id}.json`, b4a.from(JSON.stringify(deal)))
       await drive.del(`${folder}/${id}.json`).catch(() => {})
 

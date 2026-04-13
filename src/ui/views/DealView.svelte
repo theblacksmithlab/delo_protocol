@@ -24,10 +24,11 @@
     delivered: boolean
   }
 
-  let { deal, myPublicKey, onBack } = $props<{
+  let { deal, myPublicKey, onBack, onDealCompleted } = $props<{
     deal: Deal
     myPublicKey: string
     onBack: () => void
+    onDealCompleted?: () => void
   }>()
 
   let now           = $state(Math.floor(Date.now() / 1000))
@@ -132,9 +133,9 @@
   }
 
   const LEVEL_LABEL: Record<string, string> = {
-    handshake: 'Handshake  ·  0.4×',
-    review:    'Review  ·  0.7×',
-    escrow:    'Escrow  ·  1.0×',
+    handshake: 'Handshake',
+    review:    'Review',
+    escrow:    'Escrow',
   }
 
   function statusLabel (status: string): string {
@@ -215,6 +216,8 @@
         const err = await res.json()
         throw new Error(err.error || 'Failed to close deal')
       }
+      const data = await res.json()
+      if (data.status === 'completed') onDealCompleted?.()
       onBack()
     } catch (e) {
       closeError = e instanceof Error ? e.message : 'Unknown error'
@@ -299,6 +302,8 @@
       </div>
     {/if}
 
+    <div class="deal-section-divider"></div>
+
     <!-- Initiator terms -->
     <div class="field">
       <div class="field-label">Initiator terms</div>
@@ -317,6 +322,7 @@
 
     <!-- Outcomes — shown on completed deals -->
     {#if deal.status === 'completed'}
+      <div class="deal-section-divider"></div>
       {@const myOutcome      = isInitiator ? deal.initiator_outcome      : deal.counterparty_outcome}
       {@const myComment      = isInitiator ? deal.initiator_outcome_comment   : deal.counterparty_outcome_comment}
       {@const theirOutcome   = isInitiator ? deal.counterparty_outcome    : deal.initiator_outcome}
@@ -621,6 +627,11 @@
     font-size: 13px;
     color: #64748b;
     font-style: italic;
+  }
+
+  .deal-section-divider {
+    border-top: 1px solid #374151;
+    margin: 0.5rem 0;
   }
 
   .timer { font-size: 15px; font-weight: 600; color: #94a3b8; font-variant-numeric: tabular-nums; }
