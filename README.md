@@ -1,5 +1,17 @@
-# Delo Protocol
-### Decentralized reputation, owned by you.
+<p align="center">
+  <img src="public/delo_icon_512.png" alt="Delo Protocol" width="240"/>
+</p>
+
+<h1 align="center">Delo Protocol</h1>
+<p align="center">Decentralized reputation, owned by you.</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Status-Beta-orange?style=flat-square" />
+  <img src="https://img.shields.io/badge/Rust-WASM-b7410e?style=flat-square&logo=rust" />
+  <img src="https://img.shields.io/badge/Svelte-5-ff3e00?style=flat-square&logo=svelte" />
+  <img src="https://img.shields.io/badge/P2P-Pear%20Runtime-6366f1?style=flat-square" />
+  <img src="https://img.shields.io/badge/License-Apache%202.0-22c55e?style=flat-square" />
+</p>
 
 ---
 
@@ -113,4 +125,4 @@ Stack: **Rust**, **JavaScript (Bare/Node-like)**, **Svelte 5**, **Pear Runtime**
 
 ---
 
-*Delo Protocol is open source. No company owns it. No server controls it.*
+*Delo Protocol is open source. © 2025 Blacksmith Lab Co. Ltd.*
