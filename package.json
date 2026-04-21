@@ -1,17 +1,17 @@
 {
-  "name": "trust-protocol",
+  "name": "delo-protocol",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "pear": {
-    "name": "trust-protocol",
+    "name": "delo-protocol",
     "pre": "pear-electron/pre",
     "gui": {
       "main": "dist/index.html",
       "backgroundColor": "#1e2128",
       "height": 720,
       "width": 1024,
-      "title": "Trust Protocol"
+      "title": "Delo Protocol"
     }
   },
   "main": "index.js",

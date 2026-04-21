@@ -753,7 +753,7 @@
       </div>
       <h2>Your identity, your rules</h2>
       <p class="description">
-        Trust Protocol creates a cryptographic key on your device.<br><br>
+        Delo Protocol creates a cryptographic key on your device.<br><br>
         No accounts. No passwords. No servers.<br><br>
         Your reputation belongs to you.
       </p>
@@ -1303,7 +1303,7 @@
 
   {/if}
 
-  <footer class="app-footer">Trust Protocol · Decentralized reputation, owned by you.</footer>
+  <footer class="app-footer">Delo Protocol · Decentralized reputation, owned by you.</footer>
 </main>
 
 <!-- Share modal — overlay with QR + copy button -->
