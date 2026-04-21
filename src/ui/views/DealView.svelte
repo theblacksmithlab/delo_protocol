@@ -3,7 +3,11 @@
     id: string
     title: string
     initiator_key: string
+    initiator_drive_key: string | null
+    initiator_alias: string | null
     counterparty_key: string
+    counterparty_drive_key: string | null
+    counterparty_alias: string | null
     original_amount: number
     original_currency: string
     amount_usd: number
@@ -61,8 +65,14 @@
     return () => clearInterval(tick)
   })
 
-  const isInitiator = $derived(deal.initiator_key === myPublicKey)
-  const otherKey    = $derived(isInitiator ? deal.counterparty_key : deal.initiator_key)
+  const isInitiator  = $derived(deal.initiator_key === myPublicKey)
+  const otherKey     = $derived(isInitiator ? deal.counterparty_key     : deal.initiator_key)
+  const otherName    = $derived(isInitiator ? deal.counterparty_alias   : deal.initiator_alias)
+  const otherDriveKey = $derived(isInitiator ? deal.counterparty_drive_key : deal.initiator_drive_key)
+
+  let otherAvatarError = $state(false)
+
+  function onOtherAvatarError () { otherAvatarError = true }
 
   // Direction-aware badge class — mirrors statusClass() in DealList
   const badgeClass = $derived((() => {
@@ -275,8 +285,28 @@
     </div>
 
     <div class="field">
-      <div class="field-label">Counterparty</div>
-      <div class="field-mono">{shortKey(otherKey)}</div>
+      <div class="field-label">{isInitiator ? 'Counterparty' : 'Initiator'}</div>
+      <div class="other-party-card">
+        <div class="other-party-avatar">
+          {#if otherDriveKey && !otherAvatarError}
+            <img
+              src={`/api/get-peer-avatar?key=${otherDriveKey}`}
+              alt="Avatar"
+              class="other-party-avatar-img"
+              onerror={onOtherAvatarError}
+            />
+          {:else}
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <circle cx="12" cy="8" r="4"/>
+              <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
+            </svg>
+          {/if}
+        </div>
+        <div class="other-party-info">
+          <div class="other-party-name">{otherName || 'Anonymous'}</div>
+          <div class="other-party-key">{shortKey(otherKey)}</div>
+        </div>
+      </div>
     </div>
 
     <!-- Amount -->
@@ -335,7 +365,7 @@
         <div class="outcome-comment">{myComment ?? 'No comment'}</div>
       </div>
       <div class="field">
-        <div class="field-label">Counterparty's rating of you</div>
+        <div class="field-label">{isInitiator ? "Counterparty's" : "Initiator's"} rating of you</div>
         <div class="field-value outcome-display outcome-{theirOutcome ?? 'none'}">
           {theirOutcome ?? '—'}
         </div>
@@ -960,4 +990,41 @@
   }
   .outcome-comment-input:focus { border-color: #64748b; }
   .outcome-comment-input::placeholder { color: #64748b; }
+
+  .other-party-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 4px;
+  }
+
+  .other-party-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    overflow: hidden;
+    flex-shrink: 0;
+    background: #1e2128;
+    border: 1px solid #374151;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #64748b;
+  }
+  .other-party-avatar svg { width: 20px; height: 20px; }
+  .other-party-avatar-img { width: 100%; height: 100%; object-fit: cover; }
+
+  .other-party-info { display: flex; flex-direction: column; gap: 2px; }
+
+  .other-party-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: #e2e8f0;
+  }
+
+  .other-party-key {
+    font-family: monospace;
+    font-size: 11px;
+    color: #64748b;
+  }
 </style>

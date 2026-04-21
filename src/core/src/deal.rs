@@ -100,12 +100,6 @@ pub struct Deal {
     pub initiator_terms: String,             // filled at deal creation
     pub counterparty_terms: Option<String>,  // filled when counterparty responds
 
-    // Review fields (only populated for DealLevel::Review)
-    pub review_text: Option<String>,
-    pub rating_quality: Option<u8>,       // 1–5
-    pub rating_timing: Option<u8>,        // 1–5
-    pub rating_communication: Option<u8>, // 1–5
-
     // Signatures (ed25519, 64 bytes each)
     #[serde(with = "hex_bytes_64_opt")]
     pub initiator_sig: Option<[u8; 64]>,
@@ -225,10 +219,6 @@ mod tests {
             counterparty_outcome_comment: None,
             initiator_terms: "Deliver 10 units by Friday".to_string(),
             counterparty_terms: Some("Pay $100 on delivery".to_string()),
-            review_text: None,
-            rating_quality: None,
-            rating_timing: None,
-            rating_communication: None,
             initiator_sig: None,
             counterparty_sig: None,
         }

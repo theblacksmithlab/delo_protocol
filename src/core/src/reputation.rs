@@ -195,10 +195,6 @@ mod tests {
             counterparty_outcome_comment: None,
             initiator_terms: "Do X".to_string(),
             counterparty_terms: Some("Do Y".to_string()),
-            review_text: None,
-            rating_quality: None,
-            rating_timing: None,
-            rating_communication: None,
             initiator_sig: None,
             counterparty_sig: None,
         }

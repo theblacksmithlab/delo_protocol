@@ -911,10 +911,12 @@ bridge.server.on('request', async (req, res) => {
       if (msgSwarm)  { await msgSwarm.destroy();  msgSwarm = null }
       if (swarm)     { await swarm.destroy();     swarm = null }
       if (drive)    { await drive.close(); drive = null }
+      if (dealLogCore) { await dealLogCore.close(); dealLogCore = null }
       if (store)    { await store.close(); store = null }
 
       // Old peer drives reference the now-closed store — drop them
       peerDrives.clear()
+      appendedDealIds.clear()
 
       if (existsSync(keypairPath))   unlinkSync(keypairPath)
       if (existsSync(drivePath))     unlinkSync(drivePath)
@@ -1114,9 +1116,11 @@ bridge.server.on('request', async (req, res) => {
           )
         ])
 
+        // If update() resolved but no peer connected — data came from local cache
+        const isFromCache = freshSwarm.connections.size === 0
         const profileBuf = await peerDrive.get('/profile.json')
         if (!profileBuf) return json({ error: 'Profile not found' }, 404)
-        return json({ ...JSON.parse(b4a.toString(profileBuf)), driveKey: peerDriveKey, publicKey: peerPublicKey, dealLogKey: peerDealLogKey })
+        return json({ ...JSON.parse(b4a.toString(profileBuf)), driveKey: peerDriveKey, publicKey: peerPublicKey, dealLogKey: peerDealLogKey, ...(isFromCache && { fromCache: true }) })
       } catch (e) {
         if (e.message !== 'timeout') {
           return json({ error: String(e) }, 500)
@@ -1275,10 +1279,6 @@ bridge.server.on('request', async (req, res) => {
         outcome:            null,
         initiator_terms:    incoming.initiator_terms,
         counterparty_terms: null,
-        review_text:        null,
-        rating_quality:     null,
-        rating_timing:      null,
-        rating_communication: null,
         initiator_sig:      null,
         counterparty_sig:   null,
         delivered:          false  // JS-only field, ignored by Rust deserializer
@@ -1519,6 +1519,44 @@ bridge.server.on('request', async (req, res) => {
       const body = await readBody(req)
       const { id } = JSON.parse(b4a.toString(body))
       await clearUnread(id)
+      return json({ ok: true })
+    }
+
+    // --- Contacts --------------------------------------------------------
+
+    // GET /api/get-contacts
+    // Returns the saved contacts list from /contacts.json in own Hyperdrive.
+    if (url === '/api/get-contacts') {
+      if (!drive) return json([])
+      const buf = await drive.get('/contacts.json').catch(() => null)
+      return json(buf ? JSON.parse(b4a.toString(buf)) : [])
+    }
+
+    // POST /api/add-contact  { contactKey, publicKey, driveKey, name }
+    // Adds a contact entry, deduplicating by publicKey.
+    if (url === '/api/add-contact') {
+      if (!drive) return json({ error: 'drive not ready' }, 500)
+      const body = await readBody(req)
+      const { contactKey: ck, publicKey: pk, driveKey: dk, name } = JSON.parse(b4a.toString(body))
+      const buf = await drive.get('/contacts.json').catch(() => null)
+      const contacts = buf ? JSON.parse(b4a.toString(buf)) : []
+      if (!contacts.some(c => c.publicKey === pk)) {
+        contacts.push({ contactKey: ck, publicKey: pk, driveKey: dk, name: name || 'Anonymous', addedAt: Math.floor(Date.now() / 1000) })
+        await drive.put('/contacts.json', b4a.from(JSON.stringify(contacts)))
+      }
+      return json({ ok: true })
+    }
+
+    // POST /api/remove-contact  { contactKey }
+    // Removes a contact entry by contactKey.
+    if (url === '/api/remove-contact') {
+      if (!drive) return json({ error: 'drive not ready' }, 500)
+      const body = await readBody(req)
+      const { contactKey: ck } = JSON.parse(b4a.toString(body))
+      const buf = await drive.get('/contacts.json').catch(() => null)
+      const contacts = buf ? JSON.parse(b4a.toString(buf)) : []
+      const filtered = contacts.filter(c => c.contactKey !== ck)
+      await drive.put('/contacts.json', b4a.from(JSON.stringify(filtered)))
       return json({ ok: true })
     }
 
