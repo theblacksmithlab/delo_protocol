@@ -5,7 +5,7 @@ pub mod reputation;
 
 #[wasm_bindgen]
 pub fn greet(name: &str) -> String {
-    format!("Hello, {}! Trust Protocol core is running.", name)
+    format!("Hello, {}! Delo Protocol core is running.", name)
 }
 
 /// Calculate reputation stats for a user from their completed deal log.

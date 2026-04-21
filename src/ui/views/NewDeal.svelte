@@ -26,7 +26,7 @@
   let terms      = $state('')
   let amount     = $state('')
   let currency   = $state('USD')
-  let level      = $state<DealLevel>('handshake')
+  let level      = $state<DealLevel>('review')
 
   // Submission state
   let loading    = $state(false)
@@ -38,9 +38,9 @@
   const CURRENCIES = ['USD', 'RUB', 'EUR', 'BTC', 'USDT']
 
   const LEVELS: { value: DealLevel; label: string; desc: string; disabled?: boolean }[] = [
-    { value: 'handshake', label: 'Handshake', desc: '0.4×' },
-    { value: 'review',    label: 'Review',    desc: '0.7×' },
-    { value: 'escrow',    label: 'Escrow',    desc: '1.0× — coming soon', disabled: true }
+    { value: 'handshake', label: 'Handshake', desc: 'coming soon', disabled: true },
+    { value: 'review',    label: 'Review',    desc: '' },
+    { value: 'escrow',    label: 'Escrow',    desc: 'coming soon', disabled: true }
   ]
 
   // Validates that the input looks like a contact key (base58, ~130 chars)

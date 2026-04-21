@@ -8,20 +8,24 @@ use crate::deal::{Currency, Deal, DealStatus, Outcome};
 /// Returned by `compute_reputation` and serialized to JSON for the WebView.
 #[derive(Debug, Serialize)]
 pub struct ReputationStats {
-    /// Net weighted volume: positive_volume − negative_volume.
-    /// The single number that represents economic trust earned.
+    /// Raw sum of all completed deal amounts (positive + neutral + negative).
+    /// No coefficients applied — the actual economic value that passed through this user.
     pub total_volume: f64,
 
-    /// Sum of weighted contributions from positively-rated deals.
+    /// Sum of raw amounts from positively-rated deals (no coefficients).
     pub positive_volume: f64,
 
-    /// Sum of absolute weighted contributions from negatively-rated deals (always ≥ 0).
-    /// Stored as a positive number so the UI can display "penalty" separately.
+    /// Sum of raw amounts from negatively-rated deals (no coefficients, always ≥ 0).
     pub negative_volume: f64,
 
-    /// Success rate 0..100: positive_volume / (positive_volume + negative_volume) × 100.
-    /// None when there are no deals with a non-neutral outcome (avoid division by zero).
+    /// Success rate 0..100: positive_count / (positive_count + negative_count) × 100.
+    /// Count-based (not volume-based). None when no non-neutral deals exist.
     pub success_rate: Option<f64>,
+
+    /// Color sentiment: 0.0 = fully red, 0.5 = neutral/white, 1.0 = fully green.
+    /// Geometric mean of count_ratio and amount_ratio — both factors must be good
+    /// to reach green. Used by the UI to tint the trust volume number.
+    pub sentiment: f64,
 
     /// Total number of Completed deals (regardless of outcome).
     pub deal_count: usize,
@@ -53,9 +57,10 @@ pub fn compute_reputation(deals: &[Deal], my_public_key: &str, currency: &Curren
         .ok()
         .and_then(|b| b.try_into().ok());
 
+    let mut total_volume:    f64 = 0.0;
     let mut positive_volume: f64 = 0.0;
     let mut negative_volume: f64 = 0.0;
-    let mut deal_count    = 0usize;
+    let mut deal_count     = 0usize;
     let mut positive_count = 0usize;
     let mut neutral_count  = 0usize;
     let mut negative_count = 0usize;
@@ -74,6 +79,16 @@ pub fn compute_reputation(deals: &[Deal], my_public_key: &str, currency: &Curren
             _ => continue, // not our deal — skip
         };
 
+        // The peer's outcome field rates us.
+        let our_outcome = match subject {
+            "initiator"    => deal.counterparty_outcome.as_ref(),
+            "counterparty" => deal.initiator_outcome.as_ref(),
+            _              => None,
+        };
+
+        // Skip if outcome not set — shouldn't happen for Completed deals.
+        let Some(outcome) = our_outcome else { continue };
+
         deal_count += 1;
 
         // Track the other party's key for unique counterparty count.
@@ -84,42 +99,47 @@ pub fn compute_reputation(deals: &[Deal], my_public_key: &str, currency: &Curren
         };
         counterparty_keys.insert(peer_key);
 
-        // The peer's outcome field rates us — same convention as weighted_contribution.
-        let our_outcome = match subject {
-            "initiator"    => deal.counterparty_outcome.as_ref(),
-            "counterparty" => deal.initiator_outcome.as_ref(),
-            _              => None,
+        // Raw deal amount in the viewer's preferred currency (no coefficients).
+        let amount = match currency {
+            Currency::Usd  => deal.amount_usd,
+            Currency::Rub  => deal.amount_rub,
+            Currency::Btc  => deal.amount_btc,
+            Currency::Eur  => deal.amount_eur,
+            Currency::Usdt => deal.amount_usdt,
         };
 
-        match our_outcome {
-            Some(Outcome::Positive) => {
-                let contrib = deal.weighted_contribution(subject, currency);
-                positive_volume += contrib;
-                positive_count  += 1;
-            }
-            Some(Outcome::Neutral) => {
-                neutral_count += 1;
-                // neutral contributes 0 to volume — counted but not weighted
-            }
-            Some(Outcome::Negative) => {
-                let contrib = deal.weighted_contribution(subject, currency);
-                // weighted_contribution returns a negative number for Negative outcomes
-                negative_volume += -contrib; // store as positive magnitude
-                negative_count  += 1;
-            }
-            None => {
-                // outcome not yet set — shouldn't happen for Completed deals, skip
-            }
+        // All deals (including neutral) contribute to total volume.
+        total_volume += amount;
+
+        match outcome {
+            Outcome::Positive => { positive_volume += amount; positive_count += 1; }
+            Outcome::Neutral  => { neutral_count += 1; }
+            Outcome::Negative => { negative_volume += amount; negative_count += 1; }
         }
     }
 
-    let total_volume = positive_volume - negative_volume;
-
-    // success_rate is None when there's nothing to compute (avoids showing "0%" for new users)
-    let success_rate = if positive_volume + negative_volume > 0.0 {
-        Some(positive_volume / (positive_volume + negative_volume) * 100.0)
+    // Count-based success rate — neutral deals are excluded.
+    // None when there are no rated (non-neutral) deals.
+    let success_rate = if positive_count + negative_count > 0 {
+        Some(positive_count as f64 / (positive_count + negative_count) as f64 * 100.0)
     } else {
         None
+    };
+
+    // Sentiment: geometric mean of count_ratio and amount_ratio.
+    // 0.0 = all negative (red), 0.5 = balanced/neutral (white), 1.0 = all positive (green).
+    // Both factors must be good to reach green — if either is bad, it pulls the result down.
+    // 0.5 is returned when there are no rated deals (neutral color for new users).
+    let sentiment = if positive_count + negative_count == 0 {
+        0.5
+    } else {
+        let count_ratio = positive_count as f64 / (positive_count + negative_count) as f64;
+        let amount_ratio = if positive_volume + negative_volume > 0.0 {
+            positive_volume / (positive_volume + negative_volume)
+        } else {
+            0.5
+        };
+        (count_ratio * amount_ratio).sqrt()
     };
 
     ReputationStats {
@@ -127,6 +147,7 @@ pub fn compute_reputation(deals: &[Deal], my_public_key: &str, currency: &Curren
         positive_volume,
         negative_volume,
         success_rate,
+        sentiment,
         deal_count,
         positive_count,
         neutral_count,
@@ -174,10 +195,6 @@ mod tests {
             counterparty_outcome_comment: None,
             initiator_terms: "Do X".to_string(),
             counterparty_terms: Some("Do Y".to_string()),
-            review_text: None,
-            rating_quality: None,
-            rating_timing: None,
-            rating_communication: None,
             initiator_sig: None,
             counterparty_sig: None,
         }
@@ -203,11 +220,13 @@ mod tests {
         // counterparty_outcome rates the initiator → Positive
         let deal = make_deal(Some(Outcome::Positive), Some(Outcome::Positive), 100.0, DealLevel::Handshake, DealStatus::Completed);
         let stats = compute_reputation(&[deal], INITIATOR_KEY, &Currency::Usd);
-        // initiator's contribution = counterparty_outcome = Positive → 100 * 0.4 = 40
-        assert_eq!(stats.positive_volume, 40.0);
-        assert_eq!(stats.total_volume, 40.0);
+        // raw amount, no coefficients
+        assert_eq!(stats.positive_volume, 100.0);
+        assert_eq!(stats.total_volume, 100.0);
         assert_eq!(stats.positive_count, 1);
         assert_eq!(stats.success_rate, Some(100.0));
+        // fully positive → sentiment = sqrt(1.0 * 1.0) = 1.0
+        assert!((stats.sentiment - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -215,32 +234,72 @@ mod tests {
         // counterparty rates initiator as Negative
         let deal = make_deal(None, Some(Outcome::Negative), 100.0, DealLevel::Handshake, DealStatus::Completed);
         let stats = compute_reputation(&[deal], INITIATOR_KEY, &Currency::Usd);
-        // negative contribution = -(100 * 0.4 * 1.5) = -60 → negative_volume = 60
-        assert_eq!(stats.negative_volume, 60.0);
-        assert_eq!(stats.total_volume, -60.0);
+        // raw amount, no penalty multiplier
+        assert_eq!(stats.negative_volume, 100.0);
+        assert_eq!(stats.total_volume, 100.0);
         assert_eq!(stats.negative_count, 1);
         assert_eq!(stats.success_rate, Some(0.0));
+        // fully negative → sentiment = sqrt(0.0 * 0.0) = 0.0
+        assert!((stats.sentiment - 0.0).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn neutral_outcome_does_not_affect_volume() {
+    fn neutral_outcome_counts_in_total_volume() {
         let deal = make_deal(None, Some(Outcome::Neutral), 100.0, DealLevel::Handshake, DealStatus::Completed);
         let stats = compute_reputation(&[deal], INITIATOR_KEY, &Currency::Usd);
         assert_eq!(stats.deal_count, 1);
-        assert_eq!(stats.total_volume, 0.0);
+        // neutral deals still add to total_volume
+        assert_eq!(stats.total_volume, 100.0);
+        assert_eq!(stats.positive_volume, 0.0);
+        assert_eq!(stats.negative_volume, 0.0);
         assert_eq!(stats.neutral_count, 1);
         assert!(stats.success_rate.is_none()); // no positive or negative — None
+        // no rated deals → sentiment defaults to 0.5
+        assert!((stats.sentiment - 0.5).abs() < f64::EPSILON);
     }
 
     #[test]
     fn success_rate_mixed_outcomes() {
-        // positive: 100 * 0.4 = 40
-        // negative: 100 * 0.4 * 1.5 = 60 → negative_volume = 60
-        // success_rate = 40 / (40 + 60) = 40%
+        // count-based: 1 positive + 1 negative → 50%
         let d1 = make_deal(None, Some(Outcome::Positive), 100.0, DealLevel::Handshake, DealStatus::Completed);
         let d2 = make_deal(None, Some(Outcome::Negative), 100.0, DealLevel::Handshake, DealStatus::Completed);
         let stats = compute_reputation(&[d1, d2], INITIATOR_KEY, &Currency::Usd);
-        assert!((stats.success_rate.unwrap() - 40.0).abs() < 0.001);
+        assert!((stats.success_rate.unwrap() - 50.0).abs() < 0.001);
+        // equal amounts, equal counts → sentiment = sqrt(0.5 * 0.5) = 0.5
+        assert!((stats.sentiment - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn sentiment_big_positive_many_small_negatives() {
+        // 1 positive $1000, 10 negative $1 each
+        // count_ratio  = 1/11 ≈ 0.0909
+        // amount_ratio = 1000/1010 ≈ 0.9901
+        // sentiment    = sqrt(0.0909 * 0.9901) ≈ 0.300 → reddish
+        let pos = make_deal(None, Some(Outcome::Positive), 1000.0, DealLevel::Handshake, DealStatus::Completed);
+        let mut deals = vec![pos];
+        for _ in 0..10 {
+            deals.push(make_deal(None, Some(Outcome::Negative), 1.0, DealLevel::Handshake, DealStatus::Completed));
+        }
+        let stats = compute_reputation(&deals, INITIATOR_KEY, &Currency::Usd);
+        assert_eq!(stats.total_volume, 1010.0);
+        assert_eq!(stats.positive_count, 1);
+        assert_eq!(stats.negative_count, 10);
+        assert!((stats.sentiment - 0.300).abs() < 0.01); // reddish
+    }
+
+    #[test]
+    fn sentiment_big_negative_many_small_positives() {
+        // 10 positive $1, 1 negative $1000
+        // count_ratio  = 10/11 ≈ 0.909
+        // amount_ratio = 10/1010 ≈ 0.0099
+        // sentiment    = sqrt(0.909 * 0.0099) ≈ 0.095 → very red
+        let neg = make_deal(None, Some(Outcome::Negative), 1000.0, DealLevel::Handshake, DealStatus::Completed);
+        let mut deals = vec![neg];
+        for _ in 0..10 {
+            deals.push(make_deal(None, Some(Outcome::Positive), 1.0, DealLevel::Handshake, DealStatus::Completed));
+        }
+        let stats = compute_reputation(&deals, INITIATOR_KEY, &Currency::Usd);
+        assert!(stats.sentiment < 0.15); // very red
     }
 
     #[test]
@@ -276,7 +335,8 @@ mod tests {
         // initiator_outcome rates the counterparty → Positive
         let deal = make_deal(Some(Outcome::Positive), None, 100.0, DealLevel::Review, DealStatus::Completed);
         let stats = compute_reputation(&[deal], COUNTERPARTY_KEY, &Currency::Usd);
-        // counterparty's contribution = initiator_outcome = Positive → 100 * 0.7 = 70
-        assert_eq!(stats.positive_volume, 70.0);
+        // raw amount, no coefficient — deal level doesn't affect volume display
+        assert_eq!(stats.positive_volume, 100.0);
+        assert_eq!(stats.total_volume, 100.0);
     }
 }

@@ -175,13 +175,20 @@ async function initDealLog () {
   console.log('[deal-log] ready, key:', b4a.toString(dealLogCore.key, 'hex').slice(0, 16) + '...', 'blocks:', dealLogCore.length)
 }
 
+// Guards against duplicate appends caused by concurrent processPeerOutbox calls.
+// peerDrive.db.core fires 'append' on any write — multiple events can overlap in the same tick.
+const appendedDealIds = new Set()
+
 async function appendToDealLog (deal) {
   if (!dealLogCore) return
+  if (appendedDealIds.has(deal.id)) return // already appended this session
+  appendedDealIds.add(deal.id)
   try {
     await dealLogCore.append(b4a.from(JSON.stringify(deal)))
     console.log('[deal-log] appended deal:', deal.id?.slice(0, 8), '— total blocks:', dealLogCore.length)
   } catch (e) {
     console.error('[deal-log] append failed:', String(e))
+    appendedDealIds.delete(deal.id) // allow retry on failure
   }
 }
 
@@ -904,10 +911,12 @@ bridge.server.on('request', async (req, res) => {
       if (msgSwarm)  { await msgSwarm.destroy();  msgSwarm = null }
       if (swarm)     { await swarm.destroy();     swarm = null }
       if (drive)    { await drive.close(); drive = null }
+      if (dealLogCore) { await dealLogCore.close(); dealLogCore = null }
       if (store)    { await store.close(); store = null }
 
       // Old peer drives reference the now-closed store — drop them
       peerDrives.clear()
+      appendedDealIds.clear()
 
       if (existsSync(keypairPath))   unlinkSync(keypairPath)
       if (existsSync(drivePath))     unlinkSync(drivePath)
@@ -1018,19 +1027,35 @@ bridge.server.on('request', async (req, res) => {
       avatarSwarm.join(peerDrive.discoveryKey, { server: false, client: true })
       avatarSwarm.flush().then(avatarDone, avatarDone)
 
+      let avatarTimedOut = false
       try {
         await Promise.race([
           peerDrive.db.core.update(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000))
+          new Promise((_, reject) => setTimeout(() => { avatarTimedOut = true; reject(new Error('timeout')) }, 7000))
         ])
-      } catch {
+      } catch (e) {
+        if (!avatarTimedOut) {
+          avatarSwarm.destroy()
+          res.statusCode = 404; return res.end()
+        }
+        // Peer offline — fall through and try local cache
+      } finally {
         avatarSwarm.destroy()
-        res.statusCode = 404; return res.end()
       }
 
-      const buf = await peerDrive.get('/avatar').finally(() => avatarSwarm.destroy())
+      // Read avatar — works from live connection or local cache
+      const buf = await Promise.race([
+        peerDrive.get('/avatar'),
+        new Promise(resolve => setTimeout(() => resolve(null), 800))
+      ]).catch(() => null)
+
       if (!buf) { res.statusCode = 404; return res.end() }
-      const profileBuf = await peerDrive.get('/profile.json')
+
+      const profileBuf = await Promise.race([
+        peerDrive.get('/profile.json'),
+        new Promise(resolve => setTimeout(() => resolve(null), 800))
+      ]).catch(() => null)
+
       const mime = profileBuf
         ? (JSON.parse(b4a.toString(profileBuf)).avatarMime || 'image/jpeg')
         : 'image/jpeg'
@@ -1059,7 +1084,7 @@ bridge.server.on('request', async (req, res) => {
       if (drive && b4a.toString(drive.key, 'hex') === peerDriveKey) {
         const buf = await drive.get('/profile.json')
         if (!buf) return json({ error: 'Profile not found' }, 404)
-        return json({ ...JSON.parse(b4a.toString(buf)), driveKey: peerDriveKey })
+        return json({ ...JSON.parse(b4a.toString(buf)), driveKey: peerDriveKey, publicKey: peerPublicKey, dealLogKey: peerDealLogKey })
       }
 
       // Cache drive instance (keeps Hypercore data between requests) but always
@@ -1083,21 +1108,101 @@ bridge.server.on('request', async (req, res) => {
       freshSwarm.flush().then(metaDone, metaDone)
 
       try {
-        // update() now waits for the remote core length to be known
-        // (blocked by findingPeers until flush() resolves or peer connects)
+        // 7s timeout — enough for DHT discovery. On timeout: fall back to local cache.
         await Promise.race([
           peerDrive.db.core.update(),
           new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Peer not reachable (timeout)')), 15000)
+            setTimeout(() => reject(new Error('timeout')), 7000)
           )
         ])
 
+        // If update() resolved but no peer connected — data came from local cache
+        const isFromCache = freshSwarm.connections.size === 0
         const profileBuf = await peerDrive.get('/profile.json')
         if (!profileBuf) return json({ error: 'Profile not found' }, 404)
-        return json({ ...JSON.parse(b4a.toString(profileBuf)), driveKey: peerDriveKey })
+        return json({ ...JSON.parse(b4a.toString(profileBuf)), driveKey: peerDriveKey, publicKey: peerPublicKey, dealLogKey: peerDealLogKey, ...(isFromCache && { fromCache: true }) })
+      } catch (e) {
+        if (e.message !== 'timeout') {
+          return json({ error: String(e) }, 500)
+        }
+
+        // Peer is offline — try local cache.
+        // drive.get() can serve blocks cached from a previous session.
+        // Use a short timeout: cached reads are instant; hanging means no cache.
+        const cachedBuf = await Promise.race([
+          peerDrive.get('/profile.json'),
+          new Promise(resolve => setTimeout(() => resolve(null), 800))
+        ]).catch(() => null)
+
+        if (cachedBuf) {
+          return json({ ...JSON.parse(b4a.toString(cachedBuf)), driveKey: peerDriveKey, publicKey: peerPublicKey, dealLogKey: peerDealLogKey, fromCache: true })
+        }
+
+        return json({ error: 'Peer not reachable' }, 503)
       } finally {
         freshSwarm.destroy()
       }
+    }
+
+    // --- Peer deal log: fetch -----------------------------------------
+    // POST /api/get-peer-deal-log { dealLogKey: hex, publicKey: hex }
+    // Opens the peer's remote Hypercore by dealLogKey, reads up to 1000 blocks.
+    // Returns JSON array of deal objects, or { error, partial: [] } on timeout.
+    if (url === '/api/get-peer-deal-log') {
+      const body = await readBody(req)
+      let parsed
+      try { parsed = JSON.parse(b4a.toString(body)) } catch { return json({ error: 'invalid body' }, 400) }
+
+      const { dealLogKey: peerLogKey } = parsed
+      if (!peerLogKey) return json({ error: 'dealLogKey required' }, 400)
+      if (!store) return json({ error: 'store not ready' }, 500)
+
+      const keyBuf = b4a.from(peerLogKey, 'hex')
+      const peerCore = store.get({ key: keyBuf })
+      await peerCore.ready()
+
+      // findingPeers() holds core.update() until DHT flush — same pattern as drive fetch
+      const freshSwarm = new Hyperswarm()
+      const coreDone = peerCore.findingPeers()
+
+      freshSwarm.on('connection', socket => store.replicate(socket))
+      freshSwarm.join(crypto.discoveryKey(peerCore.key), { server: false, client: true })
+      freshSwarm.flush().then(coreDone, coreDone)
+
+      let timedOut = false
+      try {
+        await Promise.race([
+          peerCore.update(),
+          new Promise((_, reject) =>
+            setTimeout(() => { timedOut = true; reject(new Error('timeout')) }, 15000)
+          )
+        ])
+      } catch (e) {
+        if (!timedOut) {
+          await freshSwarm.destroy()
+          return json({ error: String(e), partial: [] })
+        }
+        // On timeout: fall through — corestore may have cached blocks from a prior session
+      } finally {
+        freshSwarm.destroy().catch(() => {})
+      }
+
+      const MAX_BLOCKS = 1000
+      const total = Math.min(peerCore.length, MAX_BLOCKS)
+
+      if (total === 0) {
+        return timedOut
+          ? json({ error: 'timeout', partial: [] })
+          : json([])
+      }
+
+      const entries = []
+      for (let i = 0; i < total; i++) {
+        const buf = await peerCore.get(i).catch(() => null)
+        if (!buf) continue
+        try { entries.push(JSON.parse(b4a.toString(buf))) } catch {}
+      }
+      return json(entries)
     }
 
     // --- Exchange rates ------------------------------------------------
@@ -1174,10 +1279,6 @@ bridge.server.on('request', async (req, res) => {
         outcome:            null,
         initiator_terms:    incoming.initiator_terms,
         counterparty_terms: null,
-        review_text:        null,
-        rating_quality:     null,
-        rating_timing:      null,
-        rating_communication: null,
         initiator_sig:      null,
         counterparty_sig:   null,
         delivered:          false  // JS-only field, ignored by Rust deserializer
@@ -1221,8 +1322,7 @@ bridge.server.on('request', async (req, res) => {
       if (!buf) return json({ error: 'deal not found' }, 404)
 
       const deal = JSON.parse(b4a.toString(buf))
-      const newStatus = role === 'initiator' ? 'cancelled_by_initiator' : 'cancelled_by_counterparty'
-      deal.status = newStatus
+      deal.status = role === 'initiator' ? 'cancelled_by_initiator' : 'cancelled_by_counterparty'
       await drive.put(`/history/deals/${id}.json`, b4a.from(JSON.stringify(deal)))
       await drive.del(`${folder}/${id}.json`).catch(() => {})
 
@@ -1419,6 +1519,44 @@ bridge.server.on('request', async (req, res) => {
       const body = await readBody(req)
       const { id } = JSON.parse(b4a.toString(body))
       await clearUnread(id)
+      return json({ ok: true })
+    }
+
+    // --- Contacts --------------------------------------------------------
+
+    // GET /api/get-contacts
+    // Returns the saved contacts list from /contacts.json in own Hyperdrive.
+    if (url === '/api/get-contacts') {
+      if (!drive) return json([])
+      const buf = await drive.get('/contacts.json').catch(() => null)
+      return json(buf ? JSON.parse(b4a.toString(buf)) : [])
+    }
+
+    // POST /api/add-contact  { contactKey, publicKey, driveKey, name }
+    // Adds a contact entry, deduplicating by publicKey.
+    if (url === '/api/add-contact') {
+      if (!drive) return json({ error: 'drive not ready' }, 500)
+      const body = await readBody(req)
+      const { contactKey: ck, publicKey: pk, driveKey: dk, name } = JSON.parse(b4a.toString(body))
+      const buf = await drive.get('/contacts.json').catch(() => null)
+      const contacts = buf ? JSON.parse(b4a.toString(buf)) : []
+      if (!contacts.some(c => c.publicKey === pk)) {
+        contacts.push({ contactKey: ck, publicKey: pk, driveKey: dk, name: name || 'Anonymous', addedAt: Math.floor(Date.now() / 1000) })
+        await drive.put('/contacts.json', b4a.from(JSON.stringify(contacts)))
+      }
+      return json({ ok: true })
+    }
+
+    // POST /api/remove-contact  { contactKey }
+    // Removes a contact entry by contactKey.
+    if (url === '/api/remove-contact') {
+      if (!drive) return json({ error: 'drive not ready' }, 500)
+      const body = await readBody(req)
+      const { contactKey: ck } = JSON.parse(b4a.toString(body))
+      const buf = await drive.get('/contacts.json').catch(() => null)
+      const contacts = buf ? JSON.parse(b4a.toString(buf)) : []
+      const filtered = contacts.filter(c => c.contactKey !== ck)
+      await drive.put('/contacts.json', b4a.from(JSON.stringify(filtered)))
       return json({ ok: true })
     }
 
